@@ -38,7 +38,7 @@ jobs:
           out = {
             'updated_at': now.isoformat(),
             'source': 'Yahoo Finance via yfinance',
-            'model_version': '4.2',
+            'model_version': '4.4',
             'stocks': []
           }
 
@@ -83,6 +83,13 @@ jobs:
 
           def clamp(v, lo=0, hi=100):
               return max(lo, min(hi, v))
+
+          def first_num(*vals):
+              for v in vals:
+                  v = n(v)
+                  if v is not None:
+                      return v
+              return None
 
           def frame_row(df, key):
               try:
@@ -169,6 +176,18 @@ jobs:
                   total_debt = n(info.get('totalDebt'))
                   cash = n(info.get('totalCash'))
                   ebitda = n(info.get('ebitda'))
+                  shares_out = first_num(info.get('sharesOutstanding'), info.get('impliedSharesOutstanding'))
+
+                  # Pull investment intensity only when it can materially explain weak FCF.
+                  rd_expense = None
+                  capex = None
+                  if fcf is not None and fcf < 0:
+                      inc = safe_call(lambda: t.income_stmt, None)
+                      cf = safe_call(lambda: t.cashflow, None)
+                      for key in ('Research And Development', 'ResearchDevelopment'):
+                          rd_expense = first_num(rd_expense, cell(inc, key))
+                      for key in ('Capital Expenditure', 'CapitalExpenditure'):
+                          capex = first_num(capex, cell(cf, key))
 
                   x.update({
                     'price': price,
@@ -191,6 +210,9 @@ jobs:
                     'roic': pct(info.get('returnOnCapital')),
                     'fcf': fcf,
                     'ocf': ocf,
+                    'shares_outstanding': shares_out,
+                    'rd_expense': abs(rd_expense) if rd_expense is not None else None,
+                    'capex': abs(capex) if capex is not None else None,
                     'fcf_yield': (fcf/market_cap)*100 if fcf is not None and market_cap else None,
                     'p_fcf': (market_cap/fcf) if fcf is not None and market_cap and fcf > 0 else None,
                     'net_debt_ebitda': ((total_debt or 0) - (cash or 0))/ebitda if ebitda and total_debt is not None else None,
@@ -346,6 +368,76 @@ jobs:
                       elif payout > 80: dividend -= 10
                   dividend = clamp(dividend)
 
+                  # ---------- story + fair value ----------
+                  # Story is a forward-looking quantitative proxy, not a subjective narrative.
+                  # It rewards growth runway, estimate momentum, earnings delivery, analyst upside
+                  # and legitimate reinvestment when weak FCF is explained by R&D/capex.
+                  target_upside = ((x['target_mean'] / price) - 1) * 100 if x.get('target_mean') and price else None
+                  eps_growth = x.get('forward_eps_growth')
+                  lt_growth = x.get('long_term_growth')
+                  rev_growth = x.get('forward_revenue_growth')
+                  revision_signal = revisions
+                  surprise_signal = clamp(50 + (x.get('latest_surprise_pct') or 0) * 2) if x.get('latest_surprise_pct') is not None else 50
+                  target_signal = clamp(50 + (target_upside or 0) * 1.2) if target_upside is not None else 50
+                  runway_signal = avg([
+                      clamp(50 + (eps_growth or 0) * 1.25) if eps_growth is not None else None,
+                      clamp(50 + (lt_growth or 0) * 1.10) if lt_growth is not None else None,
+                      clamp(50 + (rev_growth or 0) * 1.25) if rev_growth is not None else None
+                  ], 50)
+                  reinvestment_context = 50
+                  investment_reason = None
+                  if fcf is not None and fcf < 0:
+                      rd_intensity = (x.get('rd_expense') / max(abs(x.get('revenue_estimate') or 0), 1)) * 100 if x.get('rd_expense') is not None and x.get('revenue_estimate') else None
+                      capex_intensity = (x.get('capex') / max(abs(x.get('revenue_estimate') or 0), 1)) * 100 if x.get('capex') is not None and x.get('revenue_estimate') else None
+                      if x.get('ocf') is not None and x.get('ocf') > 0 and ((rd_intensity or 0) >= 3 or (capex_intensity or 0) >= 5):
+                          reinvestment_context = 82
+                          reasons = []
+                          if rd_intensity is not None and rd_intensity >= 3: reasons.append(f'R&D intensity {rd_intensity:.1f}%')
+                          if capex_intensity is not None and capex_intensity >= 5: reasons.append(f'capex intensity {capex_intensity:.1f}%')
+                          investment_reason = 'Positive operating cash flow with deliberate investment (' + ', '.join(reasons) + ').'
+                      else:
+                          reinvestment_context = 35
+                  story = round(clamp(
+                      runway_signal * .35 + revision_signal * .20 + surprise_signal * .10 +
+                      target_signal * .15 + analyst * .10 + reinvestment_context * .10
+                  ))
+
+                  # Fair value uses several independent anchors. All prices stay in the security's
+                  # trading currency. We prefer actual analyst targets when available, but do not copy
+                  # them blindly. Earnings and FCF anchors provide an internal Malone estimate.
+                  fair_components = []
+                  fair_weights = []
+                  if x.get('eps_estimate') is not None and x.get('eps_estimate') > 0:
+                      justified_pe = clamp(14 + max(-5, min(40, (eps_growth or 0))) * .55, 10, 36)
+                      fair_components.append(x['eps_estimate'] * justified_pe)
+                      fair_weights.append(.40)
+                  if fcf is not None and fcf > 0 and shares_out:
+                      fcf_per_share = fcf / shares_out
+                      required_yield = clamp(7.0 - max(0, min(20, (lt_growth or 0))) * .08, 4.0, 7.0)
+                      fair_components.append(fcf_per_share / (required_yield / 100))
+                      fair_weights.append(.30)
+                  if x.get('target_mean') is not None and x.get('target_mean') > 0:
+                      fair_components.append(x['target_mean'])
+                      fair_weights.append(.30)
+                  if fair_components:
+                      weighted = sum(v*w for v,w in zip(fair_components, fair_weights)) / sum(fair_weights)
+                      malone_fair_value = round(weighted, 2)
+                      fair_low = round(malone_fair_value * .85, 2)
+                      fair_high = round(malone_fair_value * 1.15, 2)
+                      upside_pct = ((malone_fair_value / price) - 1) * 100 if price else None
+                  else:
+                      malone_fair_value = fair_low = fair_high = upside_pct = None
+                  # Expected 12-month value is the same base fair value; the label means this is a
+                  # forward valuation based on next-year earnings/FCF inputs, not a short-term price call.
+                  expected_12m = malone_fair_value
+                  if upside_pct is None:
+                      upside_score = 50
+                  else:
+                      upside_score = clamp(50 + upside_pct * 1.25)
+                  # Opportunity is intentionally separate from the legacy Deep/High-Level verdict.
+                  # It is the context-aware score that combines current fundamentals, future story
+                  # and valuation upside without rewriting the underlying Deep mathematics.
+
                   # Round the displayed component scores FIRST, then calculate the headline scores
                   # from those exact displayed integers. This makes every score mathematically auditable.
                   growth_score = round(g)
@@ -367,6 +459,12 @@ jobs:
 
                   # High-level score: same rule — calculate from the exact displayed component values.
                   high = round(growth_score * .35 + quality_score * .25 + momentum_score * .15 + analyst_score * .25)
+                  if upside_pct is None:
+                      upside_score = 50
+                  else:
+                      upside_score = clamp(50 + upside_pct * 1.25)
+                  opportunity_score = round(clamp(deep * .60 + story * .25 + upside_score * .15))
+                  opportunity_verdict = 'BUY' if opportunity_score >= 82 and (upside_pct is None or upside_pct >= 10) and story >= 70 else 'WATCH' if opportunity_score >= 72 else 'HOLD' if opportunity_score >= 60 else 'AVOID'
 
                   verdict = 'BUY' if deep >= 82 and high >= 75 else 'WATCH' if deep >= 72 and high >= 65 else 'HOLD' if deep >= 60 else 'AVOID'
                   if verdict == 'BUY' and value < 45: verdict = 'WATCH'
@@ -379,6 +477,11 @@ jobs:
                     'momentum_score': momentum_score, 'dividend_score': dividend_score,
                     'analyst_score': analyst_score, 'high_score': high, 'deep_score': deep,
                     'deep_score_components': deep_components,
+                    'story_score': story, 'opportunity_score': opportunity_score,
+                    'malone_fair_value': malone_fair_value, 'fair_value_low': fair_low, 'fair_value_high': fair_high,
+                    'expected_12m_value': expected_12m, 'upside_pct': upside_pct, 'upside_score': upside_score,
+                    'analyst_target_upside': target_upside, 'investment_context': investment_reason,
+                    'opportunity_verdict': opportunity_verdict,
                     'verdict': verdict
                   })
 
@@ -434,8 +537,48 @@ jobs:
               with open(snapshot_path, 'w', encoding='utf-8') as sfh:
                   json.dump(snapshot_payload, sfh, separators=(',', ':'), ensure_ascii=False)
               out['last_daily_snapshot'] = snapshot_date
+              # Keep one monthly valuation snapshot so fair value / upside can be reviewed over time.
+              try:
+                  month_key = snapshot_date[:7]
+                  monthly_dir = 'monthly_snapshots'
+                  os.makedirs(monthly_dir, exist_ok=True)
+                  monthly_path = os.path.join(monthly_dir, month_key + '.json')
+                  monthly_payload = dict(out)
+                  monthly_payload['snapshot_date'] = snapshot_date
+                  monthly_payload['snapshot_month'] = month_key
+                  monthly_payload['snapshot_timezone'] = 'Australia/Melbourne'
+                  monthly_payload['snapshot_type'] = 'monthly_valuation'
+                  with open(monthly_path, 'w', encoding='utf-8') as mfh:
+                      json.dump(monthly_payload, mfh, separators=(',', ':'), ensure_ascii=False)
+                  out['last_monthly_snapshot'] = month_key
+              except Exception:
+                  pass
           elif prior_files:
               out['last_daily_snapshot'] = prior_files[-1][:10]
+
+          # Compact monthly history used by the website to show how Malone fair value and story
+          # estimates evolve. One record per symbol per month; the current month is overwritten by
+          # the latest daily snapshot, while prior months remain immutable.
+          monthly_history = {}
+          try:
+              monthly_files = sorted([f for f in os.listdir('monthly_snapshots') if f.endswith('.json')])
+              for mf in monthly_files:
+                  with open(os.path.join('monthly_snapshots', mf), 'r', encoding='utf-8') as mfh:
+                      mp = json.load(mfh)
+                  month = mp.get('snapshot_month') or mf[:7]
+                  for st in mp.get('stocks', []):
+                      sym = st.get('symbol')
+                      if not sym: continue
+                      monthly_history.setdefault(sym, []).append({
+                          'month': month, 'price': st.get('price'),
+                          'fair_value': st.get('malone_fair_value'), 'upside_pct': st.get('upside_pct'),
+                          'story_score': st.get('story_score'), 'opportunity_score': st.get('opportunity_score')
+                      })
+              for sym in monthly_history:
+                  monthly_history[sym] = sorted(monthly_history[sym], key=lambda z: z.get('month',''))[-12:]
+          except Exception:
+              monthly_history = {}
+          out['monthly_history'] = monthly_history
 
           with open('market-data.json', 'w', encoding='utf-8') as fh:
               json.dump(out, fh, separators=(',', ':'), ensure_ascii=False)
@@ -445,6 +588,6 @@ jobs:
         run: |
           git config user.name "malone-markets-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add market-data.json snapshots/
+          git add market-data.json snapshots/ monthly_snapshots/
           git diff --cached --quiet || git commit -m "Update Malone Markets data and daily snapshot"
           git push
