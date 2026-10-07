@@ -38,7 +38,7 @@ jobs:
           out = {
             'updated_at': now.isoformat(),
             'source': 'Yahoo Finance via yfinance',
-            'model_version': '4.0',
+            'model_version': '4.2',
             'stocks': []
           }
 
