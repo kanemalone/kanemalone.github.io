@@ -1,0 +1,602 @@
+[
+  {
+    "symbol": "ALL.AX",
+    "name": "Aristocrat Leisure",
+    "market": "ASX",
+    "tv": "ALL"
+  },
+  {
+    "symbol": "BHP.AX",
+    "name": "BHP Group",
+    "market": "ASX",
+    "tv": "BHP"
+  },
+  {
+    "symbol": "CSL.AX",
+    "name": "CSL",
+    "market": "ASX",
+    "tv": "CSL"
+  },
+  {
+    "symbol": "FMG.AX",
+    "name": "Fortescue",
+    "market": "ASX",
+    "tv": "FMG"
+  },
+  {
+    "symbol": "GNP.AX",
+    "name": "GenusPlus Group",
+    "market": "ASX",
+    "tv": "GNP"
+  },
+  {
+    "symbol": "GTUM.AX",
+    "name": "Global X Global Momentum ETF",
+    "market": "ASX",
+    "tv": "GTUM"
+  },
+  {
+    "symbol": "HACK.AX",
+    "name": "BetaShares Global Cybersecurity ETF",
+    "market": "ASX",
+    "tv": "HACK"
+  },
+  {
+    "symbol": "JBH.AX",
+    "name": "JB Hi-Fi",
+    "market": "ASX",
+    "tv": "JBH"
+  },
+  {
+    "symbol": "QAN.AX",
+    "name": "Qantas Airways",
+    "market": "ASX",
+    "tv": "QAN"
+  },
+  {
+    "symbol": "RMD.AX",
+    "name": "ResMed",
+    "market": "ASX",
+    "tv": "RMD"
+  },
+  {
+    "symbol": "TLX.AX",
+    "name": "Telix Pharmaceuticals",
+    "market": "ASX",
+    "tv": "TLX"
+  },
+  {
+    "symbol": "VAS.AX",
+    "name": "Vanguard Australian Shares ETF",
+    "market": "ASX",
+    "tv": "VAS"
+  },
+  {
+    "symbol": "XRO.AX",
+    "name": "Xero",
+    "market": "ASX",
+    "tv": "XRO"
+  },
+  {
+    "symbol": "ANZ.AX",
+    "name": "ANZ Group",
+    "market": "ASX",
+    "tv": "ANZ"
+  },
+  {
+    "symbol": "CBA.AX",
+    "name": "Commonwealth Bank",
+    "market": "ASX",
+    "tv": "CBA"
+  },
+  {
+    "symbol": "NAB.AX",
+    "name": "National Australia Bank",
+    "market": "ASX",
+    "tv": "NAB"
+  },
+  {
+    "symbol": "WBC.AX",
+    "name": "Westpac Banking",
+    "market": "ASX",
+    "tv": "WBC"
+  },
+  {
+    "symbol": "MQG.AX",
+    "name": "Macquarie Group",
+    "market": "ASX",
+    "tv": "MQG"
+  },
+  {
+    "symbol": "SUN.AX",
+    "name": "Suncorp Group",
+    "market": "ASX",
+    "tv": "SUN"
+  },
+  {
+    "symbol": "QBE.AX",
+    "name": "QBE Insurance",
+    "market": "ASX",
+    "tv": "QBE"
+  },
+  {
+    "symbol": "IAG.AX",
+    "name": "Insurance Australia Group",
+    "market": "ASX",
+    "tv": "IAG"
+  },
+  {
+    "symbol": "WES.AX",
+    "name": "Wesfarmers",
+    "market": "ASX",
+    "tv": "WES"
+  },
+  {
+    "symbol": "WOW.AX",
+    "name": "Woolworths Group",
+    "market": "ASX",
+    "tv": "WOW"
+  },
+  {
+    "symbol": "COL.AX",
+    "name": "Coles Group",
+    "market": "ASX",
+    "tv": "COL"
+  },
+  {
+    "symbol": "GMG.AX",
+    "name": "Goodman Group",
+    "market": "ASX",
+    "tv": "GMG"
+  },
+  {
+    "symbol": "TCL.AX",
+    "name": "Transurban Group",
+    "market": "ASX",
+    "tv": "TCL"
+  },
+  {
+    "symbol": "REA.AX",
+    "name": "REA Group",
+    "market": "ASX",
+    "tv": "REA"
+  },
+  {
+    "symbol": "CAR.AX",
+    "name": "CAR Group",
+    "market": "ASX",
+    "tv": "CAR"
+  },
+  {
+    "symbol": "SEK.AX",
+    "name": "Seek",
+    "market": "ASX",
+    "tv": "SEK"
+  },
+  {
+    "symbol": "RHC.AX",
+    "name": "Ramsay Health Care",
+    "market": "ASX",
+    "tv": "RHC"
+  },
+  {
+    "symbol": "COH.AX",
+    "name": "Cochlear",
+    "market": "ASX",
+    "tv": "COH"
+  },
+  {
+    "symbol": "SHL.AX",
+    "name": "Sonic Healthcare",
+    "market": "ASX",
+    "tv": "SHL"
+  },
+  {
+    "symbol": "CPU.AX",
+    "name": "Computershare",
+    "market": "ASX",
+    "tv": "CPU"
+  },
+  {
+    "symbol": "ALU.AX",
+    "name": "Altium",
+    "market": "ASX",
+    "tv": "ALU"
+  },
+  {
+    "symbol": "TNE.AX",
+    "name": "TechnologyOne",
+    "market": "ASX",
+    "tv": "TNE"
+  },
+  {
+    "symbol": "WTC.AX",
+    "name": "WiseTech Global",
+    "market": "ASX",
+    "tv": "WTC"
+  },
+  {
+    "symbol": "RIO.AX",
+    "name": "Rio Tinto",
+    "market": "ASX",
+    "tv": "RIO"
+  },
+  {
+    "symbol": "S32.AX",
+    "name": "South32",
+    "market": "ASX",
+    "tv": "S32"
+  },
+  {
+    "symbol": "MIN.AX",
+    "name": "Mineral Resources",
+    "market": "ASX",
+    "tv": "MIN"
+  },
+  {
+    "symbol": "PLS.AX",
+    "name": "Pilbara Minerals",
+    "market": "ASX",
+    "tv": "PLS"
+  },
+  {
+    "symbol": "WDS.AX",
+    "name": "Woodside Energy",
+    "market": "ASX",
+    "tv": "WDS"
+  },
+  {
+    "symbol": "STO.AX",
+    "name": "Santos",
+    "market": "ASX",
+    "tv": "STO"
+  },
+  {
+    "symbol": "ORG.AX",
+    "name": "Origin Energy",
+    "market": "ASX",
+    "tv": "ORG"
+  },
+  {
+    "symbol": "APA.AX",
+    "name": "APA Group",
+    "market": "ASX",
+    "tv": "APA"
+  },
+  {
+    "symbol": "SCG.AX",
+    "name": "Scentre Group",
+    "market": "ASX",
+    "tv": "SCG"
+  },
+  {
+    "symbol": "VCX.AX",
+    "name": "Vicinity Centres",
+    "market": "ASX",
+    "tv": "VCX"
+  },
+  {
+    "symbol": "PME.AX",
+    "name": "Pro Medicus",
+    "market": "ASX",
+    "tv": "PME"
+  },
+  {
+    "symbol": "NXT.AX",
+    "name": "NEXTDC",
+    "market": "ASX",
+    "tv": "NXT"
+  },
+  {
+    "symbol": "ALQ.AX",
+    "name": "ALS Limited",
+    "market": "ASX",
+    "tv": "ALQ"
+  },
+  {
+    "symbol": "REH.AX",
+    "name": "Reece",
+    "market": "ASX",
+    "tv": "REH"
+  },
+  {
+    "symbol": "AMZN",
+    "name": "Amazon",
+    "market": "US",
+    "tv": "AMZN"
+  },
+  {
+    "symbol": "ANET",
+    "name": "Arista Networks",
+    "market": "US",
+    "tv": "ANET"
+  },
+  {
+    "symbol": "AVGO",
+    "name": "Broadcom",
+    "market": "US",
+    "tv": "AVGO"
+  },
+  {
+    "symbol": "CSCO",
+    "name": "Cisco",
+    "market": "US",
+    "tv": "CSCO"
+  },
+  {
+    "symbol": "ETN",
+    "name": "Eaton",
+    "market": "US",
+    "tv": "ETN"
+  },
+  {
+    "symbol": "GEV",
+    "name": "GE Vernova",
+    "market": "US",
+    "tv": "GEV"
+  },
+  {
+    "symbol": "GOOG",
+    "name": "Alphabet",
+    "market": "US",
+    "tv": "GOOG"
+  },
+  {
+    "symbol": "JPM",
+    "name": "JPMorgan Chase",
+    "market": "US",
+    "tv": "JPM"
+  },
+  {
+    "symbol": "LLY",
+    "name": "Eli Lilly",
+    "market": "US",
+    "tv": "LLY"
+  },
+  {
+    "symbol": "META",
+    "name": "Meta Platforms",
+    "market": "US",
+    "tv": "META"
+  },
+  {
+    "symbol": "MSFT",
+    "name": "Microsoft",
+    "market": "US",
+    "tv": "MSFT"
+  },
+  {
+    "symbol": "MU",
+    "name": "Micron Technology",
+    "market": "US",
+    "tv": "MU"
+  },
+  {
+    "symbol": "NVDA",
+    "name": "NVIDIA",
+    "market": "US",
+    "tv": "NVDA"
+  },
+  {
+    "symbol": "PANW",
+    "name": "Palo Alto Networks",
+    "market": "US",
+    "tv": "PANW"
+  },
+  {
+    "symbol": "S",
+    "name": "SentinelOne",
+    "market": "US",
+    "tv": "S"
+  },
+  {
+    "symbol": "V",
+    "name": "Visa",
+    "market": "US",
+    "tv": "V"
+  },
+  {
+    "symbol": "ZS",
+    "name": "Zscaler",
+    "market": "US",
+    "tv": "ZS"
+  },
+  {
+    "symbol": "AAPL",
+    "name": "Apple",
+    "market": "US",
+    "tv": "AAPL"
+  },
+  {
+    "symbol": "BRK-B",
+    "name": "Berkshire Hathaway",
+    "market": "US",
+    "tv": "BRK"
+  },
+  {
+    "symbol": "BAC",
+    "name": "Bank of America",
+    "market": "US",
+    "tv": "BAC"
+  },
+  {
+    "symbol": "GS",
+    "name": "Goldman Sachs",
+    "market": "US",
+    "tv": "GS"
+  },
+  {
+    "symbol": "MA",
+    "name": "Mastercard",
+    "market": "US",
+    "tv": "MA"
+  },
+  {
+    "symbol": "JNJ",
+    "name": "Johnson & Johnson",
+    "market": "US",
+    "tv": "JNJ"
+  },
+  {
+    "symbol": "UNH",
+    "name": "UnitedHealth Group",
+    "market": "US",
+    "tv": "UNH"
+  },
+  {
+    "symbol": "ABBV",
+    "name": "AbbVie",
+    "market": "US",
+    "tv": "ABBV"
+  },
+  {
+    "symbol": "TMO",
+    "name": "Thermo Fisher Scientific",
+    "market": "US",
+    "tv": "TMO"
+  },
+  {
+    "symbol": "ISRG",
+    "name": "Intuitive Surgical",
+    "market": "US",
+    "tv": "ISRG"
+  },
+  {
+    "symbol": "CAT",
+    "name": "Caterpillar",
+    "market": "US",
+    "tv": "CAT"
+  },
+  {
+    "symbol": "DE",
+    "name": "Deere",
+    "market": "US",
+    "tv": "DE"
+  },
+  {
+    "symbol": "HON",
+    "name": "Honeywell",
+    "market": "US",
+    "tv": "HON"
+  },
+  {
+    "symbol": "RTX",
+    "name": "RTX",
+    "market": "US",
+    "tv": "RTX"
+  },
+  {
+    "symbol": "LMT",
+    "name": "Lockheed Martin",
+    "market": "US",
+    "tv": "LMT"
+  },
+  {
+    "symbol": "XOM",
+    "name": "Exxon Mobil",
+    "market": "US",
+    "tv": "XOM"
+  },
+  {
+    "symbol": "CVX",
+    "name": "Chevron",
+    "market": "US",
+    "tv": "CVX"
+  },
+  {
+    "symbol": "COP",
+    "name": "ConocoPhillips",
+    "market": "US",
+    "tv": "COP"
+  },
+  {
+    "symbol": "WMT",
+    "name": "Walmart",
+    "market": "US",
+    "tv": "WMT"
+  },
+  {
+    "symbol": "COST",
+    "name": "Costco Wholesale",
+    "market": "US",
+    "tv": "COST"
+  },
+  {
+    "symbol": "HD",
+    "name": "Home Depot",
+    "market": "US",
+    "tv": "HD"
+  },
+  {
+    "symbol": "MCD",
+    "name": "McDonald's",
+    "market": "US",
+    "tv": "MCD"
+  },
+  {
+    "symbol": "NFLX",
+    "name": "Netflix",
+    "market": "US",
+    "tv": "NFLX"
+  },
+  {
+    "symbol": "ORCL",
+    "name": "Oracle",
+    "market": "US",
+    "tv": "ORCL"
+  },
+  {
+    "symbol": "CRM",
+    "name": "Salesforce",
+    "market": "US",
+    "tv": "CRM"
+  },
+  {
+    "symbol": "NOW",
+    "name": "ServiceNow",
+    "market": "US",
+    "tv": "NOW"
+  },
+  {
+    "symbol": "AMD",
+    "name": "Advanced Micro Devices",
+    "market": "US",
+    "tv": "AMD"
+  },
+  {
+    "symbol": "TSM",
+    "name": "Taiwan Semiconductor",
+    "market": "US",
+    "tv": "TSM"
+  },
+  {
+    "symbol": "QCOM",
+    "name": "Qualcomm",
+    "market": "US",
+    "tv": "QCOM"
+  },
+  {
+    "symbol": "LRCX",
+    "name": "Lam Research",
+    "market": "US",
+    "tv": "LRCX"
+  },
+  {
+    "symbol": "KLAC",
+    "name": "KLA",
+    "market": "US",
+    "tv": "KLAC"
+  },
+  {
+    "symbol": "PLTR",
+    "name": "Palantir Technologies",
+    "market": "US",
+    "tv": "PLTR"
+  },
+  {
+    "symbol": "CRWD",
+    "name": "CrowdStrike",
+    "market": "US",
+    "tv": "CRWD"
+  }
+]
