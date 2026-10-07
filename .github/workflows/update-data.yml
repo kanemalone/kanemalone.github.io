@@ -15,93 +15,226 @@ jobs:
           python -m pip install --disable-pip-version-check -q yfinance pandas
           python <<'PY'
           import yfinance as yf, json, math, time
+          import pandas as pd
           from datetime import datetime, timezone
-          symbols=['ALL.AX', 'BHP.AX', 'CSL.AX', 'FMG.AX', 'GNP.AX', 'GTUM.AX', 'HACK.AX', 'JBH.AX', 'QAN.AX', 'RMD.AX', 'TLX.AX', 'VAS.AX', 'XRO.AX', 'AMZN', 'ANET', 'AVGO', 'CSCO', 'ETN', 'GEV', 'GOOG', 'JPM', 'LLY', 'META', 'MSFT', 'MU', 'NVDA', 'PANW', 'S', 'V', 'ZS']
+
+          symbols=['ALL.AX','BHP.AX','CSL.AX','FMG.AX','GNP.AX','GTUM.AX','HACK.AX','JBH.AX','QAN.AX','RMD.AX','TLX.AX','VAS.AX','XRO.AX','AMZN','ANET','AVGO','CSCO','ETN','GEV','GOOG','JPM','LLY','META','MSFT','MU','NVDA','PANW','S','V','ZS']
           etfs={"GTUM.AX","HACK.AX","VAS.AX"}
+          names={
+            'ALL.AX':'Aristocrat Leisure','BHP.AX':'BHP Group','CSL.AX':'CSL','FMG.AX':'Fortescue','GNP.AX':'GenusPlus Group','GTUM.AX':'Global X Global Momentum ETF','HACK.AX':'BetaShares Global Cybersecurity ETF','JBH.AX':'JB Hi-Fi','QAN.AX':'Qantas Airways','RMD.AX':'ResMed','TLX.AX':'Telix Pharmaceuticals','VAS.AX':'Vanguard Australian Shares ETF','XRO.AX':'Xero','AMZN':'Amazon','ANET':'Arista Networks','AVGO':'Broadcom','CSCO':'Cisco','ETN':'Eaton','GEV':'GE Vernova','GOOG':'Alphabet','JPM':'JPMorgan Chase','LLY':'Eli Lilly','META':'Meta Platforms','MSFT':'Microsoft','MU':'Micron Technology','NVDA':'NVIDIA','PANW':'Palo Alto Networks','S':'SentinelOne','V':'Visa','ZS':'Zscaler'}
           out={"updated_at":datetime.now(timezone.utc).isoformat(),"source":"Yahoo Finance via yfinance","stocks":[]}
+
           def n(x):
               try:
-                  x=float(x); return None if math.isnan(x) or math.isinf(x) else x
+                  if x is None: return None
+                  x=float(x)
+                  return None if math.isnan(x) or math.isinf(x) else x
               except: return None
           def pct(x):
-              x=n(x); return x*100 if x is not None and abs(x)<=1.5 else x
-          def avg(a,d=50): return sum(a)/len(a) if a else d
-          def clamp(x): return max(0,min(100,x))
+              x=n(x)
+              if x is None: return None
+              return x*100 if abs(x)<=1.5 else x
+          def clamp(x): return max(0,min(100,float(x)))
+          def mean(vals, default=50):
+              vals=[v for v in vals if v is not None]
+              return sum(vals)/len(vals) if vals else default
+          def score_growth(v):
+              if v is None: return None
+              return clamp(50 + v*1.6)
+          def score_quality(v):
+              if v is None: return None
+              return clamp(50 + v*1.8)
+          def get_row(obj, key):
+              try:
+                  if hasattr(obj,'loc'):
+                      return obj.loc[key]
+                  return obj.get(key)
+              except: return None
+          def first_value(obj, keys):
+              for k in keys:
+                  v=get_row(obj,k)
+                  if v is not None:
+                      return v
+              return None
+          def safe_news(t, company):
+              items=[]
+              try: items=t.get_news(count=6) or []
+              except: items=[]
+              # yfinance/Yahoo response formats have changed over time; normalize common shapes.
+              def norm(a):
+                  if not isinstance(a,dict): return None
+                  content=a.get('content') if isinstance(a.get('content'),dict) else a
+                  title=content.get('title') or a.get('title')
+                  link=content.get('canonicalUrl',{}).get('url') if isinstance(content.get('canonicalUrl'),dict) else None
+                  link=link or content.get('link') or a.get('link')
+                  publisher=content.get('provider',{}).get('displayName') if isinstance(content.get('provider'),dict) else None
+                  publisher=publisher or content.get('publisher') or a.get('publisher')
+                  ts=content.get('pubDate') or content.get('providerPublishTime') or a.get('providerPublishTime')
+                  if title and link: return {'title':title,'publisher':publisher or 'Yahoo Finance','link':link,'published':ts}
+                  return None
+              for a in items:
+                  z=norm(a)
+                  if z: items and None
+                  if z and z['link'] not in [q.get('link') for q in items if isinstance(q,dict)]: pass
+              normalized=[]
+              for a in items:
+                  z=norm(a)
+                  if z: normalized.append(z)
+              if not normalized:
+                  try:
+                      sr=yf.Search(company, max_results=3, news_count=6, include_cb=False)
+                      for a in (sr.news or [])[:6]:
+                          z=norm(a)
+                          if z: normalized.append(z)
+                  except Exception:
+                      pass
+              seen=set(); result=[]
+              for z in normalized:
+                  if z['link'] in seen: continue
+                  seen.add(z['link']); result.append(z)
+                  if len(result)>=5: break
+              return result
+
+          # Batch six months of prices once, used for 1m/3m/6m momentum.
+          try:
+              hist=yf.download(symbols, period='6mo', interval='1d', auto_adjust=False, progress=False, threads=True, group_by='ticker')
+          except Exception:
+              hist=None
+
           for s in symbols:
-              x={"symbol":s}
+              x={'symbol':s,'company':names.get(s,s)}
               try:
                   t=yf.Ticker(s)
                   try: i=t.get_info() or {}
                   except: i={}
                   try: fi=t.fast_info or {}
                   except: fi={}
-                  price=n(i.get("currentPrice")) or n(fi.get("last_price"))
-                  prev=n(i.get("previousClose")) or n(fi.get("previous_close"))
+                  price=n(i.get('currentPrice')) or n(fi.get('last_price'))
+                  prev=n(i.get('previousClose')) or n(fi.get('previous_close'))
                   day=((price/prev)-1)*100 if price and prev else None
-                  div_rate=n(i.get("dividendRate"))
+                  div_rate=n(i.get('dividendRate'))
                   div_yield=(div_rate/price*100) if div_rate is not None and price else None
                   if div_yield is None:
-                      raw=n(i.get("dividendYield")); div_yield=raw if raw is not None and raw>2 else (raw*100 if raw is not None else None)
-                  x.update(price=price,previous_close=prev,day_pct=day,pe=n(i.get("trailingPE")),forward_pe=n(i.get("forwardPE")),peg=n(i.get("pegRatio")),
-                    ps=n(i.get("priceToSalesTrailing12Months")),pb=n(i.get("priceToBook")),ev_ebitda=n(i.get("enterpriseToEbitda")),
-                    revenue_growth=pct(i.get("revenueGrowth")),earnings_growth=pct(i.get("earningsGrowth")),profit_margin=pct(i.get("profitMargins")),
-                    operating_margin=pct(i.get("operatingMargins")),roe=pct(i.get("returnOnEquity")),roa=pct(i.get("returnOnAssets")),
-                    fcf=n(i.get("freeCashflow")),ocf=n(i.get("operatingCashflow")),debt_equity=n(i.get("debtToEquity")),
-                    current_ratio=n(i.get("currentRatio")),dividend_yield=div_yield,dividend_rate=div_rate,
-                    target_mean=n(i.get("targetMeanPrice")),target_low=n(i.get("targetLowPrice")),target_high=n(i.get("targetHighPrice")),
-                    recommendation=i.get("recommendationKey"),market_cap=n(i.get("marketCap")),high_52w=n(i.get("fiftyTwoWeekHigh")),
-                    low_52w=n(i.get("fiftyTwoWeekLow")),sector=i.get("sector"),industry=i.get("industry"),currency=i.get("currency"))
+                      raw=n(i.get('dividendYield')); div_yield=raw if raw is not None and raw>2 else (raw*100 if raw is not None else None)
+                  x.update(price=price,previous_close=prev,day_pct=day,pe=n(i.get('trailingPE')),forward_pe=n(i.get('forwardPE')),peg=n(i.get('pegRatio')),ps=n(i.get('priceToSalesTrailing12Months')),pb=n(i.get('priceToBook')),ev_ebitda=n(i.get('enterpriseToEbitda')),revenue_growth=pct(i.get('revenueGrowth')),earnings_growth=pct(i.get('earningsGrowth')),profit_margin=pct(i.get('profitMargins')),operating_margin=pct(i.get('operatingMargins')),roe=pct(i.get('returnOnEquity')),roa=pct(i.get('returnOnAssets')),fcf=n(i.get('freeCashflow')),ocf=n(i.get('operatingCashflow')),total_cash=n(i.get('totalCash')),total_debt=n(i.get('totalDebt')),debt_equity=n(i.get('debtToEquity')),current_ratio=n(i.get('currentRatio')),total_revenue=n(i.get('totalRevenue')),dividend_yield=div_yield,dividend_rate=div_rate,target_mean=n(i.get('targetMeanPrice')),target_low=n(i.get('targetLowPrice')),target_high=n(i.get('targetHighPrice')),recommendation=i.get('recommendationKey'),recommendation_mean=n(i.get('recommendationMean')),analyst_count=n(i.get('numberOfAnalystOpinions')),market_cap=n(i.get('marketCap')),high_52w=n(i.get('fiftyTwoWeekHigh')),low_52w=n(i.get('fiftyTwoWeekLow')),sector=i.get('sector'),industry=i.get('industry'),currency=i.get('currency'))
+
+                  # Forward estimates / revisions from yfinance's analysis endpoints.
+                  ee={}
+                  re={}
+                  et={}
+                  ge={}
+                  try: ee=t.get_earnings_estimate(as_dict=True) or {}
+                  except: ee={}
+                  try: re=t.get_revenue_estimate(as_dict=True) or {}
+                  except: re={}
+                  try: et=t.get_eps_trend(as_dict=True) or {}
+                  except: et={}
+                  try: ge=t.get_growth_estimates(as_dict=True) or {}
+                  except: ge={}
+                  def period(obj, p):
+                      v=obj.get(p) if isinstance(obj,dict) else None
+                      return v if isinstance(v,dict) else {}
+                  ee1=period(ee,'+1y'); ee0=period(ee,'0y')
+                  re1=period(re,'+1y'); re0=period(re,'0y')
+                  et0=period(et,'0y')
+                  x.update(forward_eps_growth=pct(ee1.get('growth')),forward_revenue_growth=pct(re1.get('growth')),eps_estimate_0y=n(ee0.get('avg')),eps_estimate_1y=n(ee1.get('avg')),revenue_estimate_0y=n(re0.get('avg')),revenue_estimate_1y=n(re1.get('avg')),eps_trend_current=n(et0.get('current')),eps_trend_30d=n(et0.get('30daysAgo')),eps_trend_90d=n(et0.get('90daysAgo')),long_term_growth=pct(period(ge,'+5y').get('stock')))
+
                   try:
                       er=t.get_eps_revisions(as_dict=True) or {}
-                      up=sum(float(v.get("upLast30days") or 0) for v in er.values() if isinstance(v,dict))
-                      down=sum(float(v.get("downLast30days") or 0) for v in er.values() if isinstance(v,dict))
-                  except: up=down=0
-                  x.update(eps_revisions_up_30d=up,eps_revisions_down_30d=down,eps_revision_balance_30d=up-down)
-                  if s in etfs:
-                      x.update(high_score=None,deep_score=None,verdict="ETF",score_type="ETF")
-                  else:
-                      g=avg([clamp(50+v*2.5) for v in [x["revenue_growth"],x["earnings_growth"]] if v is not None])
-                      q=avg([clamp(50+v*1.8) for v in [x["profit_margin"],x["operating_margin"],x["roe"],x["roa"]] if v is not None])
-                      vals=[v for v in [x["pe"],x["forward_pe"],x["ev_ebitda"]] if v is not None and v>0]
-                      value_parts=[clamp(100-(v-10)*2.4) for v in vals]
-                      if x["peg"] is not None and x["peg"]>0: value_parts.append(clamp(100-(x["peg"]-0.8)*55))
-                      value=avg(value_parts)
-                      cash=100 if x["fcf"] is not None and x["ocf"] is not None and x["fcf"]>0 and x["ocf"]>0 else 55
-                      revision=clamp(55+(x["eps_revision_balance_30d"] or 0)*8)
-                      if x["recommendation"] in ("strong_buy","buy"): revision=min(100,revision+15)
-                      elif x["recommendation"] in ("sell","strong_sell"): revision=max(0,revision-20)
-                      momentum=clamp((price-x["low_52w"])/(x["high_52w"]-x["low_52w"])*100) if price and x["low_52w"] and x["high_52w"] and x["high_52w"]>x["low_52w"] else 50
-                      dividend=clamp((div_yield or 0)*12.5)
-                      high=round(.35*g+.25*q+.20*momentum+.20*revision)
-                      deep=round(.25*g+.20*q+.15*value+.15*cash+.10*revision+.10*momentum+.05*dividend)
-                      verdict="BUY" if deep>=82 and high>=75 else "WATCH" if deep>=72 and high>=65 else "HOLD" if deep>=60 else "AVOID"
-                      if verdict=="BUY" and value<40: verdict="WATCH"
-                      if q<35 and cash<35: verdict="AVOID"
-                      pos=[]; cau=[]
-                      if g>=75: pos.append("strong growth")
-                      elif g<45: cau.append("weak growth")
-                      if q>=75: pos.append("high quality")
-                      elif q<45: cau.append("quality/margins")
-                      if value>=75: pos.append("attractive valuation")
-                      elif value<45: cau.append("valuation")
-                      if revision>=75: pos.append("positive revisions")
-                      elif revision<45: cau.append("weak revisions")
-                      if momentum>=75: pos.append("strong momentum")
-                      elif momentum<40: cau.append("weak momentum")
-                      if cash>=80: pos.append("positive cash flow")
-                      x.update(high_score=high,deep_score=deep,verdict=verdict,score_type="EQUITY",growth_score=round(g),quality_score=round(q),value_score=round(value),
-                               cashflow_score=round(cash),revision_score=round(revision),momentum_score=round(momentum),dividend_score=round(dividend),positives=pos[:3],cautions=cau[:3])
+                      vals=[v for v in er.values() if isinstance(v,dict)]
+                      up30=sum(float(v.get('upLast30days') or 0) for v in vals); down30=sum(float(v.get('downLast30days') or 0) for v in vals)
+                      up7=sum(float(v.get('upLast7days') or 0) for v in vals); down7=sum(float(v.get('downLast7days') or 0) for v in vals)
+                  except: up30=down30=up7=down7=0
+                  x.update(eps_revisions_up_30d=up30,eps_revisions_down_30d=down30,eps_revisions_up_7d=up7,eps_revisions_down_7d=down7,eps_revision_balance_30d=up30-down30)
+
+                  # Historical momentum.
+                  m1=m3=m6=None
                   try:
-                      x["news"]=[{"title":a.get("title"),"publisher":a.get("publisher"),"link":a.get("link")} for a in (t.get_news(count=3) or [])[:3]]
-                  except: x["news"]=[]
-              except Exception as e: x["error"]=str(e)[:180]
-              out["stocks"].append(x); time.sleep(.2)
-          open("market-data.json","w").write(json.dumps(out,separators=(",",":")))
+                      h=hist[s]['Close'].dropna() if hist is not None and isinstance(hist.columns,pd.MultiIndex) and s in hist.columns.get_level_values(0) else None
+                      if h is not None and len(h)>0:
+                          last=float(h.iloc[-1])
+                          if len(h)>=22: m1=(last/float(h.iloc[-22])-1)*100
+                          if len(h)>=64: m3=(last/float(h.iloc[-64])-1)*100
+                          if len(h)>=126: m6=(last/float(h.iloc[0])-1)*100
+                  except: pass
+                  x.update(return_1m=m1,return_3m=m3,return_6m=m6)
+
+                  # Earnings calendar.
+                  try:
+                      ed=t.get_earnings_dates(limit=4)
+                      if ed is not None and len(ed): x['next_earnings']=str(ed.index[0])
+                  except: pass
+
+                  if s in etfs:
+                      x.update(high_score=None,deep_score=None,verdict='ETF',score_type='ETF')
+                  else:
+                      growth=mean([score_growth(v) for v in [x['revenue_growth'],x['earnings_growth'],x['forward_eps_growth'],x['forward_revenue_growth'],x['long_term_growth']]])
+                      quality=mean([score_quality(v) for v in [x['profit_margin'],x['operating_margin'],x['roe'],x['roa']]])
+                      # Penalize high leverage and weak liquidity, but do not dominate the score.
+                      if x['debt_equity'] is not None: quality=clamp(quality - max(0,x['debt_equity']-80)*0.05)
+                      value_parts=[]
+                      for v in [x['pe'],x['forward_pe'],x['ev_ebitda']]:
+                          if v is not None and v>0: value_parts.append(clamp(100-(v-10)*2.5))
+                      if x['peg'] is not None and x['peg']>0: value_parts.append(clamp(100-(x['peg']-0.8)*50))
+                      fcf_yield=(x['fcf']/x['market_cap']*100) if x['fcf'] is not None and x['market_cap'] else None
+                      if fcf_yield is not None: value_parts.append(clamp(50+fcf_yield*10))
+                      value=mean(value_parts)
+                      cash_parts=[]
+                      if x['fcf'] is not None and x['total_revenue']:
+                          cash_parts.append(clamp(50+(x['fcf']/x['total_revenue']*100)*5))
+                      if x['ocf'] is not None and x['total_revenue']:
+                          cash_parts.append(clamp(50+(x['ocf']/x['total_revenue']*100)*4))
+                      if x['total_debt'] is not None and x['total_cash'] is not None and x['total_debt']>0:
+                          net_debt_ratio=(x['total_debt']-x['total_cash'])/x['total_debt']*100
+                          cash_parts.append(clamp(100-net_debt_ratio))
+                      cash=mean(cash_parts,55)
+                      revision=clamp(50+(up30-down30)*7+(up7-down7)*3)
+                      if x['recommendation'] in ('strong_buy','buy'): revision=min(100,revision+10)
+                      elif x['recommendation'] in ('sell','strong_sell'): revision=max(0,revision-15)
+                      if x['eps_trend_current'] and x['eps_trend_30d']:
+                          trend=(x['eps_trend_current']/x['eps_trend_30d']-1)*100
+                          revision=clamp(revision+trend*1.5)
+                      momentum=mean([clamp(50+v*1.2) for v in [m1,m3,m6] if v is not None],50)
+                      if price and x['low_52w'] and x['high_52w'] and x['high_52w']>x['low_52w']:
+                          range_score=clamp((price-x['low_52w'])/(x['high_52w']-x['low_52w'])*100)
+                          momentum=0.65*momentum+0.35*range_score
+                      dividend=clamp((div_yield or 0)*12.5)
+                      analyst=50
+                      if x['target_mean'] and price: analyst=clamp(50+((x['target_mean']/price)-1)*100)
+                      high=round(.30*growth+.25*quality+.20*momentum+.15*revision+.10*analyst)
+                      deep=round(.24*growth+.19*quality+.15*value+.15*cash+.12*revision+.10*momentum+.05*dividend)
+                      verdict='BUY' if deep>=82 and high>=75 else 'WATCH' if deep>=72 and high>=65 else 'HOLD' if deep>=60 else 'AVOID'
+                      if verdict=='BUY' and value<40: verdict='WATCH'
+                      if quality<30 and cash<35: verdict='AVOID'
+                      pos=[]; cau=[]
+                      if growth>=75: pos.append('strong growth')
+                      elif growth<45: cau.append('weak growth')
+                      if quality>=75: pos.append('high quality')
+                      elif quality<45: cau.append('quality/margins')
+                      if value>=75: pos.append('attractive valuation')
+                      elif value<45: cau.append('valuation')
+                      if revision>=75: pos.append('positive estimate revisions')
+                      elif revision<45: cau.append('weak estimate revisions')
+                      if momentum>=75: pos.append('strong momentum')
+                      elif momentum<40: cau.append('weak momentum')
+                      if cash>=75: pos.append('strong cash generation')
+                      elif cash<45: cau.append('cash generation')
+                      if analyst>=70: pos.append('analyst upside')
+                      elif analyst<40: cau.append('analyst downside')
+                      x.update(high_score=high,deep_score=deep,verdict=verdict,score_type='EQUITY',growth_score=round(growth),quality_score=round(quality),value_score=round(value),cashflow_score=round(cash),revision_score=round(revision),momentum_score=round(momentum),dividend_score=round(dividend),analyst_score=round(analyst),positives=pos[:4],cautions=cau[:4])
+
+                  x['news']=safe_news(t,names.get(s,s))
+              except Exception as e:
+                  x['error']=str(e)[:180]
+              out['stocks'].append(x)
+              time.sleep(.15)
+
+          with open('market-data.json','w') as f: json.dump(out,f,separators=(',',':'))
           PY
       - name: Commit updated data
         run: |
           git config user.name "malone-markets-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add market-data.json
-          git diff --cached --quiet || git commit -m "Update Malone Markets data"
+          git diff --cached --quiet || git commit -m "Upgrade Malone Markets scoring and news"
           git push
