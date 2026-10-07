@@ -1,0 +1,68 @@
+name: Update Malone Markets data
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+permissions:
+  contents: write
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Fetch Yahoo Finance data
+        run: |
+          python -m pip install --disable-pip-version-check -q yfinance pandas
+          python <<'PY'
+          import yfinance as yf, json, math, time
+          from datetime import datetime, timezone
+          symbols=['ALL.AX', 'BHP.AX', 'CSL.AX', 'FMG.AX', 'GNP.AX', 'GTUM.AX', 'HACK.AX', 'JBH.AX', 'QAN.AX', 'RMD.AX', 'TLX.AX', 'VAS.AX', 'XRO.AX', 'AMZN', 'ANET', 'AVGO', 'CSCO', 'ETN', 'GEV', 'GOOG', 'JPM', 'LLY', 'META', 'MSFT', 'MU', 'NVDA', 'PANW', 'S', 'V', 'ZS']
+          out={"updated_at":datetime.now(timezone.utc).isoformat(),"source":"Yahoo Finance via yfinance","stocks":[]}
+          def n(x):
+              try:
+                  x=float(x)
+                  return None if math.isnan(x) or math.isinf(x) else x
+              except: return None
+          def p(x):
+              x=n(x)
+              return x*100 if x is not None and abs(x)<=2 else x
+          def av(a,d=50): return sum(a)/len(a) if a else d
+          for s in symbols:
+              x={"symbol":s}
+              try:
+                  t=yf.Ticker(s)
+                  try: i=t.get_info() or {}
+                  except: i={}
+                  try: f=t.fast_info or {}
+                  except: f={}
+                  price=n(i.get("currentPrice")) or n(f.get("last_price"))
+                  prev=n(i.get("previousClose")) or n(f.get("previous_close"))
+                  x.update(price=price,previous_close=prev,day_pct=((price/prev)-1)*100 if price and prev else None,
+                    pe=n(i.get("trailingPE")),forward_pe=n(i.get("forwardPE")),revenue_growth=p(i.get("revenueGrowth")),
+                    earnings_growth=p(i.get("earningsGrowth")),profit_margin=p(i.get("profitMargins")),
+                    operating_margin=p(i.get("operatingMargins")),roe=p(i.get("returnOnEquity")),roa=p(i.get("returnOnAssets")),
+                    fcf=n(i.get("freeCashflow")),ocf=n(i.get("operatingCashflow")),dividend_yield=p(i.get("dividendYield")),
+                    target_mean=n(i.get("targetMeanPrice")),recommendation=i.get("recommendationKey"),high_52w=n(i.get("fiftyTwoWeekHigh")))
+                  g=av([max(0,min(100,50+v*2.5)) for v in [x.get("revenue_growth"),x.get("earnings_growth")] if v is not None])
+                  q=av([max(0,min(100,50+v*2)) for v in [x.get("profit_margin"),x.get("operating_margin"),x.get("roe"),x.get("roa")] if v is not None])
+                  vals=[v for v in [x.get("pe"),x.get("forward_pe")] if v is not None]
+                  value=av([max(0,min(100,100-(v-10)*2.5)) for v in vals])
+                  cash=100 if x.get("fcf") is not None and x.get("ocf") is not None else 55
+                  r=80 if x.get("recommendation") in ("strong_buy","buy") else 55 if x.get("recommendation")=="hold" else 25 if x.get("recommendation") in ("sell","strong_sell") else 50
+                  mo=max(0,min(100,100*price/x["high_52w"])) if price and x.get("high_52w") else 50
+                  d=max(0,min(100,(x.get("dividend_yield") or 0)*25))
+                  high=round(.35*g+.25*q+.2*mo+.2*r); deep=round(.25*g+.2*q+.15*value+.15*cash+.1*r+.1*mo+.05*d)
+                  verdict="BUY" if deep>=82 and high>=75 else "WATCH" if deep>=72 and high>=65 else "HOLD" if deep>=60 else "AVOID"
+                  if verdict=="BUY" and value<40: verdict="WATCH"
+                  x.update(high_score=high,deep_score=deep,verdict=verdict)
+              except Exception as e: x["error"]=str(e)[:160]
+              out["stocks"].append(x); time.sleep(.2)
+          open("market-data.json","w").write(json.dumps(out,separators=(",",":")))
+          PY
+      - name: Commit data
+        run: |
+          git config user.name "malone-markets-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add market-data.json
+          git diff --cached --quiet || git commit -m "Update market data"
+          git push
