@@ -15,7 +15,96 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build ASX + US universe
+        run: |
+          python -m pip install --disable-pip-version-check -q pandas lxml requests
+          python <<'PY'
+          import json, re, requests, pandas as pd
+          from io import StringIO
+          HEADERS={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36'}
+          def uniq(seq): return list(dict.fromkeys([str(x).strip().upper() for x in seq if str(x).strip()]))
+          def clean_asx(vals):
+              out=[]
+              for v in vals:
+                  m=re.search(r'\b([A-Z0-9]{1,5})\b',str(v).upper())
+                  if m and m.group(1) not in ('NAN','CODE','COMPANY','SYMBOL'): out.append(m.group(1)+'.AX')
+              return uniq(out)
+          def asx_tables(url):
+              r=requests.get(url,headers=HEADERS,timeout=60); r.raise_for_status()
+              for tbl in pd.read_html(StringIO(r.text)):
+                  cols=[str(c).strip().lower() for c in tbl.columns]
+                  for i,c in enumerate(cols):
+                      if c in ('code','asx code','ticker','symbol'):
+                          cand=clean_asx(tbl.iloc[:,i].tolist())
+                          if len(cand)>=400: return cand
+                  for col in tbl.columns:
+                      cand=uniq([m+'.AX' for v in tbl[col].astype(str).tolist() for m in re.findall(r'\(([A-Z0-9]{1,5})\)',v.upper())])
+                      if len(cand)>=400: return cand
+              return []
+          asx=[]
+          for url in ['https://www.marketindex.com.au/all-ordinaries/','https://www.marketindex.com.au/asx-listed-companies','https://www.fundlater.com.au/indices/xao/all-ordinaries']:
+              try:
+                  asx=asx_tables(url); print(f'ASX source {url}: {len(asx)} tickers')
+                  if len(asx)>=450: break
+              except Exception as e: print(f'ASX source failed {url}: {e}')
+          asx_directory=[]
+          if len(asx)<450:
+              try:
+                  r=requests.get('https://www.asx.com.au/asx/research/ASXListedCompanies.csv',headers=HEADERS,timeout=60); r.raise_for_status()
+                  for line in r.text.splitlines()[1:]:
+                      parts=[p.strip().strip('\"') for p in line.split(',')]
+                      if len(parts)>=2 and re.fullmatch(r'[A-Z0-9]{1,5}',parts[1].upper()): asx.append(parts[1].upper()+'.AX')
+                  asx_directory=uniq(asx); asx=uniq(asx); print(f'ASX directory fallback: {len(asx)} tickers')
+              except Exception as e: print(f'ASX directory fallback failed: {e}')
+          us=[]
+          for url in ['https://raw.githubusercontent.com/chinobing/historical_sp500_constituents/main/sp500_constituents.csv','https://en.wikipedia.org/wiki/List_of_S%26P_500_companies']:
+              try:
+                  if url.endswith('.csv'):
+                      df=pd.read_csv(url); col=next((c for c in df.columns if str(c).lower() in ('symbol','ticker symbol','ticker')),None)
+                      if col: us=[str(x).strip().replace('.','-') for x in df[col].tolist() if str(x).strip() and str(x).lower()!='nan']
+                  else:
+                      for tbl in pd.read_html(url):
+                          for col in ('Symbol','Ticker symbol','Ticker'):
+                              if col in tbl.columns: us=[str(x).strip().replace('.','-') for x in tbl[col].tolist() if str(x).strip() and str(x).lower()!='nan']; break
+                          if len(us)>=450: break
+                  us=uniq(us); print(f'US source {url}: {len(us)} tickers')
+                  if len(us)>=450: break
+              except Exception as e: print(f'US source failed {url}: {e}')
+          # Keep a directory list available to fill the last few ASX slots if the index has 495
+          # active constituents rather than a literal 500 on the day of the run.
+          if len(asx)<500 and not asx_directory:
+              try:
+                  r=requests.get('https://www.asx.com.au/asx/research/ASXListedCompanies.csv',headers=HEADERS,timeout=60); r.raise_for_status()
+                  for line in r.text.splitlines()[1:]:
+                      parts=[p.strip().strip('\"') for p in line.split(',')]
+                      if len(parts)>=2 and re.fullmatch(r'[A-Z0-9]{1,5}',parts[1].upper()): asx_directory.append(parts[1].upper()+'.AX')
+                  asx_directory=uniq(asx_directory)
+                  print(f'ASX directory filler: {len(asx_directory)} tickers')
+              except Exception as e: print(f'ASX directory filler failed: {e}')
+          with open('watchlist.json','r',encoding='utf-8') as fh: existing=[x for x in json.load(fh) if x.get('symbol')]
+          preferred_asx=uniq([x['symbol'] for x in existing if str(x['symbol']).upper().endswith('.AX')])
+          preferred_us=uniq([x['symbol'] for x in existing if not str(x['symbol']).upper().endswith('.AX')])
+          def target(base,preferred,n,filler=[]): return uniq(uniq(preferred)+uniq(base)+uniq(filler))[:n]
+          asx=target(asx,preferred_asx,500,asx_directory); us=target(us,preferred_us,500)
+          if len(asx)<450 or len(us)<450: raise SystemExit(f'Universe build failed validation: ASX={len(asx)}, US={len(us)}. Refusing to fall back to the 100-stock watchlist.')
+          universe={'version':'ASX 500 + US 500','asx':asx,'us':us,'symbols':asx+us}
+          with open('universe.json','w',encoding='utf-8') as fh: json.dump(universe,fh)
+          print(f'FINAL UNIVERSE: {len(universe["symbols"])} | ASX={len(asx)} | US={len(us)}')
+          PY
+
+      - name: Upload universe
+        uses: actions/upload-artifact@v4
+        with:
+          name: universe-list
+          path: universe.json
+
   fetch:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +112,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+
+      - name: Download prepared universe
+        uses: actions/download-artifact@v4
+        with:
+          name: universe-list
+          path: .
 
       - name: Fetch Yahoo Finance data
         env:
@@ -38,48 +133,10 @@ jobs:
           
           import requests, re
           
-          def fetch_universe():
-              existing = []
-              try:
-                  with open('watchlist.json', 'r', encoding='utf-8') as fh:
-                      existing = [x for x in json.load(fh) if x.get('symbol')]
-              except Exception:
-                  pass
-              asx = []
-              try:
-                  html = requests.get('https://www.marketindex.com.au/all-ordinaries/', timeout=30, headers={'User-Agent':'Mozilla/5.0'}).text
-                  asx = re.findall(r'/asx/([A-Za-z0-9]+)', html)
-                  asx = list(dict.fromkeys([f'{x.upper()}.AX' for x in asx]))
-              except Exception:
-                  pass
-              us = []
-              try:
-                  tables = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
-                  for tbl in tables:
-                      for col in ('Symbol','Ticker symbol','Ticker'):
-                          if col in tbl.columns:
-                              us = [str(x).strip().replace('.', '-') for x in tbl[col].tolist() if str(x).strip() and str(x).strip() != 'nan']
-                              break
-                      if us: break
-              except Exception:
-                  pass
-              existing_asx = [str(x['symbol']).upper() for x in existing if str(x['symbol']).upper().endswith('.AX')]
-              existing_us = [str(x['symbol']).upper() for x in existing if not str(x['symbol']).upper().endswith('.AX')]
-              def preserve_overlay(index_symbols, preferred):
-                  index_symbols = list(dict.fromkeys(index_symbols))
-                  preferred = list(dict.fromkeys(preferred))
-                  extras = [x for x in preferred if x not in index_symbols]
-                  if len(index_symbols) >= 500:
-                      keep = max(0, 500 - len(extras))
-                      return list(dict.fromkeys(index_symbols[:keep] + extras))[:500]
-                  return list(dict.fromkeys(preferred + index_symbols))[:500]
-          
-              asx = preserve_overlay(asx, existing_asx)
-              us = preserve_overlay(us, existing_us)
-              return asx + us
-          
-          symbols = fetch_universe()
-          print(f'Universe: {len(symbols)} symbols')
+          with open('universe.json', 'r', encoding='utf-8') as fh:
+              universe = json.load(fh)
+          symbols = universe.get('symbols', [])
+          print(f"Prepared universe: {len(symbols)} symbols | ASX {len(universe.get('asx', []))} | US {len(universe.get('us', []))}")
           shard = int(os.environ.get('SHARD', '0'))
           shards = int(os.environ.get('SHARDS', '4'))
           symbols = [sym for i, sym in enumerate(symbols) if i % shards == shard]
@@ -695,6 +752,10 @@ jobs:
                   by_symbol[st['symbol']]=st
           stocks=list(by_symbol.values())
           stocks.sort(key=lambda x:x.get('symbol',''))
+          asx_count=sum(1 for x in stocks if str(x.get('symbol','')).upper().endswith('.AX'))
+          us_count=len(stocks)-asx_count
+          if len(stocks)<900 or asx_count<450 or us_count<450:
+              raise SystemExit(f'Merged universe validation failed: total={len(stocks)}, ASX={asx_count}, US={us_count}')
           
           now=datetime.now(timezone.utc)
           mel_now=now.astimezone(ZoneInfo('Australia/Melbourne'))
