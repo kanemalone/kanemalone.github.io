@@ -128,6 +128,8 @@ jobs:
               except Exception:
                   return None
 
+          audusd = n(safe_call(lambda: yf.Ticker('AUDUSD=X').fast_info.get('last_price'), None)) or 0.66
+
           def normalize_news(items):
               result = []
               seen = set()
@@ -160,6 +162,8 @@ jobs:
                   price = n(info.get('currentPrice')) or n(fast.get('last_price'))
                   prev = n(info.get('previousClose')) or n(fast.get('previous_close'))
                   market_cap = n(info.get('marketCap'))
+                  currency = info.get('currency') or info.get('financialCurrency')
+                  market_cap_usd = market_cap / audusd if market_cap is not None and str(currency).upper() == 'AUD' and audusd else market_cap
                   fcf = n(info.get('freeCashflow'))
                   ocf = n(info.get('operatingCashflow'))
                   total_debt = n(info.get('totalDebt'))
@@ -171,6 +175,7 @@ jobs:
                     'previous_close': prev,
                     'day_pct': ((price/prev)-1)*100 if price and prev else None,
                     'market_cap': market_cap,
+                    'market_cap_usd': market_cap_usd,
                     'pe': n(info.get('trailingPE')),
                     'forward_pe': n(info.get('forwardPE')),
                     'peg': n(info.get('pegRatio')),
@@ -201,7 +206,7 @@ jobs:
                     'low_52w': n(info.get('fiftyTwoWeekLow')),
                     'sector': info.get('sector'),
                     'industry': info.get('industry'),
-                    'currency': info.get('currency'),
+                    'currency': currency,
                     'asset_type': info.get('quoteType') or info.get('typeDisp')
                   })
 
