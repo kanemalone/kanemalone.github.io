@@ -561,9 +561,11 @@ jobs:
           # the latest daily snapshot, while prior months remain immutable.
           monthly_history = {}
           try:
-              monthly_files = sorted([f for f in os.listdir('monthly_snapshots') if f.endswith('.json')])
+              monthly_dir = 'monthly_snapshots'
+              os.makedirs(monthly_dir, exist_ok=True)
+              monthly_files = sorted([f for f in os.listdir(monthly_dir) if f.endswith('.json')])
               for mf in monthly_files:
-                  with open(os.path.join('monthly_snapshots', mf), 'r', encoding='utf-8') as mfh:
+                  with open(os.path.join(monthly_dir, mf), 'r', encoding='utf-8') as mfh:
                       mp = json.load(mfh)
                   month = mp.get('snapshot_month') or mf[:7]
                   for st in mp.get('stocks', []):
@@ -588,6 +590,7 @@ jobs:
         run: |
           git config user.name "malone-markets-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add market-data.json snapshots/ monthly_snapshots/
+          git add market-data.json snapshots/
+          if [ -d monthly_snapshots ]; then git add monthly_snapshots/; fi
           git diff --cached --quiet || git commit -m "Update Malone Markets data and daily snapshot"
           git push origin HEAD:${{ github.ref_name }}
