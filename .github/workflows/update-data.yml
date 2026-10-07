@@ -38,7 +38,7 @@ jobs:
           out = {
             'updated_at': now.isoformat(),
             'source': 'Yahoo Finance via yfinance',
-            'model_version': '4.4',
+            'model_version': '4.4.3',
             'stocks': []
           }
 
@@ -402,38 +402,91 @@ jobs:
                       target_signal * .15 + analyst * .10 + reinvestment_context * .10
                   ))
 
-                  # Fair value uses several independent anchors. All prices stay in the security's
-                  # trading currency. We prefer actual analyst targets when available, but do not copy
-                  # them blindly. Earnings and FCF anchors provide an internal Malone estimate.
-                  fair_components = []
+                  # ---------- Malone fair value v2 ----------
+                  # The first version could become too optimistic because EPS growth directly drove
+                  # a very large justified P/E (up to 36x) and the analyst target then received a full
+                  # extra weight. v2 uses a conservative next-year earnings multiple, a positive-FCF
+                  # cross-check and the analyst target as a separate reference. Each anchor is gently
+                  # winsorised around the current price so one extreme input cannot dominate the result.
+                  # This is a valuation estimate, not a promised share price.
+                  fair_anchors = []
                   fair_weights = []
+                  fair_methods = []
+
+                  # Extreme one-year EPS changes can be distorted when the prior EPS base is near
+                  # zero/negative (e.g. TLX). Use them only inside a sensible range and lean on the
+                  # long-term estimate as the second input.
+                  clean_eps_growth = eps_growth if eps_growth is not None and -50 <= eps_growth <= 100 else None
+                  clean_lt_growth = lt_growth if lt_growth is not None and -10 <= lt_growth <= 40 else None
+                  valuation_growth = avg([clean_eps_growth, clean_lt_growth], 0)
+                  valuation_growth = clamp(valuation_growth, 0, 35)
+
+                  # Justified P/E: growth matters, but not one-for-one. Quality can move the multiple
+                  # modestly; the hard 10x-26x guardrail prevents extreme growth estimates producing
+                  # unrealistic fair values.
+                  roic_v = x.get('roic')
+                  quality_premium = clamp(((roic_v or 10) - 10) * .10, -2, 2)
+                  justified_pe = clamp(14 + valuation_growth * .22 + quality_premium, 10, 26)
+                  earnings_fv = None
                   if x.get('eps_estimate') is not None and x.get('eps_estimate') > 0:
-                      justified_pe = clamp(14 + max(-5, min(40, (eps_growth or 0))) * .55, 10, 36)
-                      fair_components.append(x['eps_estimate'] * justified_pe)
-                      fair_weights.append(.40)
+                      earnings_fv = x['eps_estimate'] * justified_pe
+                      if price:
+                          earnings_fv = clamp(earnings_fv, price * .60, price * 1.75)
+                      fair_anchors.append(earnings_fv)
+                      fair_weights.append(.50)
+                      fair_methods.append('forward EPS × justified P/E')
+
+                  fcf_fv = None
                   if fcf is not None and fcf > 0 and shares_out:
                       fcf_per_share = fcf / shares_out
-                      required_yield = clamp(7.0 - max(0, min(20, (lt_growth or 0))) * .08, 4.0, 7.0)
-                      fair_components.append(fcf_per_share / (required_yield / 100))
+                      required_yield = clamp(6.75 - max(0, min(30, valuation_growth)) * .04, 5.0, 7.0)
+                      fcf_fv = fcf_per_share / (required_yield / 100)
+                      if price:
+                          fcf_fv = clamp(fcf_fv, price * .60, price * 1.75)
+                      fair_anchors.append(fcf_fv)
+                      fair_weights.append(.20)
+                      fair_methods.append('FCF yield cross-check')
+
+                  analyst_fv = x.get('target_mean') if x.get('target_mean') and x.get('target_mean') > 0 else None
+                  if analyst_fv is not None:
+                      if price:
+                          analyst_fv = clamp(analyst_fv, price * .60, price * 1.75)
+                      fair_anchors.append(analyst_fv)
                       fair_weights.append(.30)
-                  if x.get('target_mean') is not None and x.get('target_mean') > 0:
-                      fair_components.append(x['target_mean'])
-                      fair_weights.append(.30)
-                  if fair_components:
-                      weighted = sum(v*w for v,w in zip(fair_components, fair_weights)) / sum(fair_weights)
+                      fair_methods.append('analyst mean target')
+
+                  # Reallocate missing FCF weight rather than treating missing cash-flow data as zero.
+                  if fcf_fv is None and fair_anchors:
+                      if earnings_fv is not None and analyst_fv is not None:
+                          fair_weights = [.60, .40]
+                      elif earnings_fv is not None or analyst_fv is not None:
+                          fair_weights = [1.0]
+                  elif fcf_fv is not None and earnings_fv is None and analyst_fv is not None:
+                      fair_weights = [.45, .55]
+
+                  if fair_anchors:
+                      weighted = sum(v*w for v,w in zip(fair_anchors, fair_weights)) / sum(fair_weights)
                       malone_fair_value = round(weighted, 2)
                       fair_low = round(malone_fair_value * .85, 2)
                       fair_high = round(malone_fair_value * 1.15, 2)
                       upside_pct = ((malone_fair_value / price) - 1) * 100 if price else None
+                      fair_confidence = 'High' if len(fair_anchors) >= 3 else 'Medium' if len(fair_anchors) == 2 else 'Low'
+                      fair_method = ' + '.join(fair_methods)
                   else:
                       malone_fair_value = fair_low = fair_high = upside_pct = None
-                  # Expected 12-month value is the same base fair value; the label means this is a
-                  # forward valuation based on next-year earnings/FCF inputs, not a short-term price call.
+                      fair_confidence = 'Low'
+                      fair_method = 'Insufficient valuation anchors'
+
+                  # Expected 12-month value is the base fair value derived from next-year inputs and
+                  # current analyst expectations. It is not a short-term price prediction.
                   expected_12m = malone_fair_value
+                  # Saturating upside score: large estimated upside remains useful but cannot overwhelm
+                  # the rest of Malone's framework merely because one valuation input is extreme.
                   if upside_pct is None:
                       upside_score = 50
                   else:
-                      upside_score = clamp(50 + upside_pct * 1.25)
+                      import math as _math
+                      upside_score = clamp(50 + 45 * _math.tanh(upside_pct / 60.0))
                   # Opportunity is intentionally separate from the legacy Deep/High-Level verdict.
                   # It is the context-aware score that combines current fundamentals, future story
                   # and valuation upside without rewriting the underlying Deep mathematics.
@@ -480,6 +533,7 @@ jobs:
                     'story_score': story, 'opportunity_score': opportunity_score,
                     'malone_fair_value': malone_fair_value, 'fair_value_low': fair_low, 'fair_value_high': fair_high,
                     'expected_12m_value': expected_12m, 'upside_pct': upside_pct, 'upside_score': upside_score,
+                    'fair_value_confidence': fair_confidence, 'fair_value_method': fair_method, 'earnings_fair_value': earnings_fv, 'fcf_fair_value': fcf_fv,
                     'analyst_target_upside': target_upside, 'investment_context': investment_reason,
                     'opportunity_verdict': opportunity_verdict,
                     'verdict': verdict
