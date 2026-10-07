@@ -10,29 +10,76 @@ permissions:
   contents: write
 
 jobs:
-  update:
+  fetch:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
       - name: Fetch Yahoo Finance data
         env:
-          DAILY_SNAPSHOT: ${{ github.event.schedule == '30 20 * * *' }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: 4
         run: |
-          python -m pip install --disable-pip-version-check -q yfinance pandas
+          python -m pip install --disable-pip-version-check -q yfinance pandas lxml
           python <<'PY'
           import yfinance as yf
           import pandas as pd
           import json, math, time, os
           from datetime import datetime, timezone
-
-          try:
-              with open('watchlist.json', 'r', encoding='utf-8') as fh:
-                  watchlist = json.load(fh)
-              symbols = [x['symbol'] for x in watchlist if x.get('symbol')]
-          except Exception:
-              symbols = ['ALL.AX','BHP.AX','CSL.AX','FMG.AX','GNP.AX','GTUM.AX','HACK.AX','JBH.AX','QAN.AX','RMD.AX','TLX.AX','VAS.AX','XRO.AX','AMZN','ANET','AVGO','CSCO','ETN','GEV','GOOG','JPM','LLY','META','MSFT','MU','NVDA','PANW','S','V','ZS']
-
+          
+          import requests, re
+          
+          def fetch_universe():
+              existing = []
+              try:
+                  with open('watchlist.json', 'r', encoding='utf-8') as fh:
+                      existing = [x for x in json.load(fh) if x.get('symbol')]
+              except Exception:
+                  pass
+              asx = []
+              try:
+                  html = requests.get('https://www.marketindex.com.au/all-ordinaries/', timeout=30, headers={'User-Agent':'Mozilla/5.0'}).text
+                  asx = re.findall(r'/asx/([A-Za-z0-9]+)', html)
+                  asx = list(dict.fromkeys([f'{x.upper()}.AX' for x in asx]))
+              except Exception:
+                  pass
+              us = []
+              try:
+                  tables = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
+                  for tbl in tables:
+                      for col in ('Symbol','Ticker symbol','Ticker'):
+                          if col in tbl.columns:
+                              us = [str(x).strip().replace('.', '-') for x in tbl[col].tolist() if str(x).strip() and str(x).strip() != 'nan']
+                              break
+                      if us: break
+              except Exception:
+                  pass
+              existing_asx = [str(x['symbol']).upper() for x in existing if str(x['symbol']).upper().endswith('.AX')]
+              existing_us = [str(x['symbol']).upper() for x in existing if not str(x['symbol']).upper().endswith('.AX')]
+              def preserve_overlay(index_symbols, preferred):
+                  index_symbols = list(dict.fromkeys(index_symbols))
+                  preferred = list(dict.fromkeys(preferred))
+                  extras = [x for x in preferred if x not in index_symbols]
+                  if len(index_symbols) >= 500:
+                      keep = max(0, 500 - len(extras))
+                      return list(dict.fromkeys(index_symbols[:keep] + extras))[:500]
+                  return list(dict.fromkeys(preferred + index_symbols))[:500]
+          
+              asx = preserve_overlay(asx, existing_asx)
+              us = preserve_overlay(us, existing_us)
+              return asx + us
+          
+          symbols = fetch_universe()
+          print(f'Universe: {len(symbols)} symbols')
+          shard = int(os.environ.get('SHARD', '0'))
+          shards = int(os.environ.get('SHARDS', '4'))
+          symbols = [sym for i, sym in enumerate(symbols) if i % shards == shard]
+          print(f'Shard {shard+1}/{shards}: {len(symbols)} symbols')
+          
           now = datetime.now(timezone.utc)
           is_daily_snapshot_run = os.environ.get("DAILY_SNAPSHOT", "false").lower() == "true"
           out = {
@@ -41,7 +88,7 @@ jobs:
             'model_version': '4.4.3',
             'stocks': []
           }
-
+          
           # Daily snapshot baseline: compare against the most recent saved daily snapshot,
           # not the previous 15-minute refresh. This keeps score movement meaningful.
           previous = {}
@@ -52,7 +99,7 @@ jobs:
               snapshot_date = mel_now.date().isoformat()
           except Exception:
               snapshot_date = now.date().isoformat()
-
+          
           snapshot_dir = 'snapshots'
           os.makedirs(snapshot_dir, exist_ok=True)
           prior_files = sorted([f for f in os.listdir(snapshot_dir) if f.endswith('.json') and f[:10] < snapshot_date])
@@ -63,7 +110,7 @@ jobs:
                   previous = {x.get('symbol'): x for x in old.get('stocks', [])}
               except Exception:
                   previous = {}
-
+          
           def n(v):
               try:
                   if v is None: return None
@@ -71,26 +118,26 @@ jobs:
                   return None if math.isnan(v) or math.isinf(v) else v
               except Exception:
                   return None
-
+          
           def pct(v):
               v = n(v)
               if v is None: return None
               return v * 100 if abs(v) <= 2 else v
-
+          
           def avg(values, default=50):
               vals = [v for v in values if v is not None]
               return sum(vals)/len(vals) if vals else default
-
+          
           def clamp(v, lo=0, hi=100):
               return max(lo, min(hi, v))
-
+          
           def first_num(*vals):
               for v in vals:
                   v = n(v)
                   if v is not None:
                       return v
               return None
-
+          
           def frame_row(df, key):
               try:
                   if df is None or len(df) == 0: return {}
@@ -100,7 +147,7 @@ jobs:
               except Exception:
                   pass
               return {}
-
+          
           def cell(df, key, column=None):
               try:
                   row = frame_row(df, key)
@@ -110,13 +157,13 @@ jobs:
                   return n(row.get(column))
               except Exception:
                   return None
-
+          
           def safe_call(fn, default=None):
               try:
                   return fn()
               except Exception:
                   return default
-
+          
           def epoch_to_iso(value):
               # Yahoo commonly supplies providerPublishTime as Unix seconds.
               # Guard against milliseconds and invalid/1970-style values.
@@ -134,9 +181,9 @@ jobs:
                   return datetime.fromtimestamp(value, timezone.utc).isoformat()
               except Exception:
                   return None
-
+          
           audusd = n(safe_call(lambda: yf.Ticker('AUDUSD=X').fast_info.get('last_price'), None)) or 0.66
-
+          
           def normalize_news(items):
               result = []
               seen = set()
@@ -158,14 +205,14 @@ jobs:
                   result.append({'title': title.strip(), 'publisher': publisher or 'Yahoo Finance', 'link': link, 'published_at': published})
               result.sort(key=lambda x: x.get('published_at') or '', reverse=True)
               return result[:5]
-
+          
           for symbol in symbols:
               x = {'symbol': symbol}
               try:
                   t = yf.Ticker(symbol)
                   info = safe_call(lambda: t.get_info() or {}, {})
                   fast = safe_call(lambda: t.fast_info or {}, {})
-
+          
                   price = n(info.get('currentPrice')) or n(fast.get('last_price'))
                   prev = n(info.get('previousClose')) or n(fast.get('previous_close'))
                   market_cap = n(info.get('marketCap'))
@@ -177,7 +224,7 @@ jobs:
                   cash = n(info.get('totalCash'))
                   ebitda = n(info.get('ebitda'))
                   shares_out = first_num(info.get('sharesOutstanding'), info.get('impliedSharesOutstanding'))
-
+          
                   # Pull investment intensity only when it can materially explain weak FCF.
                   rd_expense = None
                   capex = None
@@ -188,7 +235,7 @@ jobs:
                           rd_expense = first_num(rd_expense, cell(inc, key))
                       for key in ('Capital Expenditure', 'CapitalExpenditure'):
                           capex = first_num(capex, cell(cf, key))
-
+          
                   x.update({
                     'price': price,
                     'previous_close': prev,
@@ -231,7 +278,7 @@ jobs:
                     'currency': currency,
                     'asset_type': info.get('quoteType') or info.get('typeDisp')
                   })
-
+          
                   # Normalize dividend yield from annual cash dividend / price when available.
                   if x.get('dividend_rate') is not None and price:
                       calc_yield = (x['dividend_rate'] / price) * 100
@@ -239,7 +286,7 @@ jobs:
                   if x.get('dividend_yield') is None and x.get('dividend_yield_raw') is not None:
                       raw = x['dividend_yield_raw']; candidate = raw * 100 if abs(raw) <= 2 else raw
                       if 0 <= candidate <= 20: x['dividend_yield'] = candidate
-
+          
                   # Analyst forward estimates and EPS trend/revisions.
                   ee = safe_call(lambda: t.get_earnings_estimate(), None)
                   re = safe_call(lambda: t.get_revenue_estimate(), None)
@@ -247,13 +294,13 @@ jobs:
                   er = safe_call(lambda: t.get_eps_revisions(), None)
                   ge = safe_call(lambda: t.get_growth_estimates(), None)
                   eh = safe_call(lambda: t.get_earnings_history(), None)
-
+          
                   def df_value(df, idx, col):
                       try:
                           if df is None or idx not in df.index or col not in df.columns: return None
                           return n(df.loc[idx, col])
                       except Exception: return None
-
+          
                   x['forward_eps_growth'] = pct(df_value(ee, '+1y', 'growth'))
                   x['forward_revenue_growth'] = pct(df_value(re, '+1y', 'growth'))
                   x['eps_estimate'] = df_value(ee, '+1y', 'avg')
@@ -268,7 +315,7 @@ jobs:
                   x['eps_down_7d'] = df_value(er, '+1y', 'downLast7days')
                   x['eps_down_30d'] = df_value(er, '+1y', 'downLast30days')
                   x['long_term_growth'] = pct(df_value(ge, '+5y', 'stock'))
-
+          
                   # Latest earnings surprise.
                   x['latest_surprise_pct'] = None
                   try:
@@ -277,7 +324,7 @@ jobs:
                           x['latest_surprise_pct'] = n(latest.get('surprisePercent'))
                   except Exception:
                       pass
-
+          
                   # Recent analyst changes.
                   x['upgrades_90d'] = 0
                   x['downgrades_90d'] = 0
@@ -300,7 +347,7 @@ jobs:
                           x['downgrades_90d'] = int(down_mask.sum())
                   except Exception:
                       pass
-
+          
                   # News with robust timestamp normalization.
                   news = safe_call(lambda: t.get_news(count=8), [])
                   normalized_news = normalize_news(news)
@@ -309,7 +356,7 @@ jobs:
                       search_news = getattr(search, 'news', []) if search is not None else []
                       normalized_news = normalize_news(search_news)
                   x['news'] = normalized_news
-
+          
                   # ---------- scoring ----------
                   # Growth: forward + current growth, with long-term estimate as a bonus.
                   growth_parts = []
@@ -319,14 +366,14 @@ jobs:
                       if v is not None:
                           growth_parts.append((clamp(50 + v*1.5), w))
                   g = sum(v*w for v,w in growth_parts)/sum(w for _,w in growth_parts) if growth_parts else 50
-
+          
                   quality_vals = []
                   for v, scale in [(x.get('profit_margin'), 1.5), (x.get('operating_margin'), 1.5),
                                    (x.get('roe'), 1.2), (x.get('roa'), 2.0), (x.get('roic'), 1.2)]:
                       if v is not None:
                           quality_vals.append(clamp(50 + v*scale))
                   q = avg(quality_vals)
-
+          
                   valuation_parts = []
                   for v, base, scale in [(x.get('pe'), 20, 2.0), (x.get('forward_pe'), 18, 2.2),
                                           (x.get('ps'), 5, 6), (x.get('pb'), 3, 7), (x.get('ev_ebitda'), 15, 2)]:
@@ -335,7 +382,7 @@ jobs:
                   if x.get('fcf_yield') is not None:
                       valuation_parts.append(clamp(50 + x['fcf_yield']*8))
                   value = avg(valuation_parts)
-
+          
                   cash_parts = []
                   if x.get('fcf') is not None: cash_parts.append(80)
                   if x.get('ocf') is not None: cash_parts.append(80)
@@ -343,7 +390,7 @@ jobs:
                   if x.get('net_debt_ebitda') is not None:
                       cash_parts.append(clamp(80 - x['net_debt_ebitda']*15))
                   cash = avg(cash_parts, 55)
-
+          
                   revision_base = 50
                   up = x.get('eps_up_30d') or 0
                   down = x.get('eps_down_30d') or 0
@@ -353,12 +400,12 @@ jobs:
                   if x.get('eps_trend_30d') is not None:
                       revision_base += clamp(x['eps_trend_30d']*2, -20, 20)
                   revisions = clamp(revision_base)
-
+          
                   rec = x.get('recommendation')
                   analyst = 80 if rec in ('strong_buy','buy') else 55 if rec == 'hold' else 25 if rec in ('sell','strong_sell') else 50
                   if x.get('target_mean') and price:
                       analyst = clamp(analyst*0.6 + clamp(50 + ((x['target_mean']/price)-1)*100)*0.4)
-
+          
                   momentum = clamp(100*price/x['high_52w']) if price and x.get('high_52w') else 50
                   dividend_yield = x.get('dividend_yield') or 0
                   dividend = clamp(15 + dividend_yield*17)
@@ -367,7 +414,7 @@ jobs:
                       if payout > 100: dividend -= 25
                       elif payout > 80: dividend -= 10
                   dividend = clamp(dividend)
-
+          
                   # ---------- story + fair value ----------
                   # Story is a forward-looking quantitative proxy, not a subjective narrative.
                   # It rewards growth runway, estimate momentum, earnings delivery, analyst upside
@@ -401,7 +448,7 @@ jobs:
                       runway_signal * .35 + revision_signal * .20 + surprise_signal * .10 +
                       target_signal * .15 + analyst * .10 + reinvestment_context * .10
                   ))
-
+          
                   # ---------- Malone fair value v2 ----------
                   # The first version could become too optimistic because EPS growth directly drove
                   # a very large justified P/E (up to 36x) and the analyst target then received a full
@@ -412,7 +459,7 @@ jobs:
                   fair_anchors = []
                   fair_weights = []
                   fair_methods = []
-
+          
                   # Extreme one-year EPS changes can be distorted when the prior EPS base is near
                   # zero/negative (e.g. TLX). Use them only inside a sensible range and lean on the
                   # long-term estimate as the second input.
@@ -420,7 +467,7 @@ jobs:
                   clean_lt_growth = lt_growth if lt_growth is not None and -10 <= lt_growth <= 40 else None
                   valuation_growth = avg([clean_eps_growth, clean_lt_growth], 0)
                   valuation_growth = clamp(valuation_growth, 0, 35)
-
+          
                   # Justified P/E: growth matters, but not one-for-one. Quality can move the multiple
                   # modestly; the hard 10x-26x guardrail prevents extreme growth estimates producing
                   # unrealistic fair values.
@@ -435,7 +482,7 @@ jobs:
                       fair_anchors.append(earnings_fv)
                       fair_weights.append(.50)
                       fair_methods.append('forward EPS × justified P/E')
-
+          
                   fcf_fv = None
                   if fcf is not None and fcf > 0 and shares_out:
                       fcf_per_share = fcf / shares_out
@@ -446,7 +493,7 @@ jobs:
                       fair_anchors.append(fcf_fv)
                       fair_weights.append(.20)
                       fair_methods.append('FCF yield cross-check')
-
+          
                   analyst_fv = x.get('target_mean') if x.get('target_mean') and x.get('target_mean') > 0 else None
                   if analyst_fv is not None:
                       if price:
@@ -454,7 +501,7 @@ jobs:
                       fair_anchors.append(analyst_fv)
                       fair_weights.append(.30)
                       fair_methods.append('analyst mean target')
-
+          
                   # Reallocate missing FCF weight rather than treating missing cash-flow data as zero.
                   if fcf_fv is None and fair_anchors:
                       if earnings_fv is not None and analyst_fv is not None:
@@ -463,7 +510,7 @@ jobs:
                           fair_weights = [1.0]
                   elif fcf_fv is not None and earnings_fv is None and analyst_fv is not None:
                       fair_weights = [.45, .55]
-
+          
                   if fair_anchors:
                       weighted = sum(v*w for v,w in zip(fair_anchors, fair_weights)) / sum(fair_weights)
                       malone_fair_value = round(weighted, 2)
@@ -476,7 +523,7 @@ jobs:
                       malone_fair_value = fair_low = fair_high = upside_pct = None
                       fair_confidence = 'Low'
                       fair_method = 'Insufficient valuation anchors'
-
+          
                   # Expected 12-month value is the base fair value derived from next-year inputs and
                   # current analyst expectations. It is not a short-term price prediction.
                   expected_12m = malone_fair_value
@@ -490,7 +537,7 @@ jobs:
                   # Opportunity is intentionally separate from the legacy Deep/High-Level verdict.
                   # It is the context-aware score that combines current fundamentals, future story
                   # and valuation upside without rewriting the underlying Deep mathematics.
-
+          
                   # Round the displayed component scores FIRST, then calculate the headline scores
                   # from those exact displayed integers. This makes every score mathematically auditable.
                   growth_score = round(g)
@@ -501,7 +548,7 @@ jobs:
                   momentum_score = round(momentum)
                   dividend_score = round(dividend)
                   analyst_score = round(analyst)
-
+          
                   # Deep score: the headline is calculated from the exact driver values shown in the UI.
                   deep_components = [
                       growth_score * .25, quality_score * .20, value_score * .15,
@@ -509,7 +556,7 @@ jobs:
                       dividend_score * .10
                   ]
                   deep = round(sum(deep_components))
-
+          
                   # High-level score: same rule — calculate from the exact displayed component values.
                   high = round(growth_score * .35 + quality_score * .25 + momentum_score * .15 + analyst_score * .25)
                   if upside_pct is None:
@@ -518,12 +565,12 @@ jobs:
                       upside_score = clamp(50 + upside_pct * 1.25)
                   opportunity_score = round(clamp(deep * .60 + story * .25 + upside_score * .15))
                   opportunity_verdict = 'BUY' if opportunity_score >= 82 and (upside_pct is None or upside_pct >= 10) and story >= 70 else 'WATCH' if opportunity_score >= 72 else 'HOLD' if opportunity_score >= 60 else 'AVOID'
-
+          
                   verdict = 'BUY' if deep >= 82 and high >= 75 else 'WATCH' if deep >= 72 and high >= 65 else 'HOLD' if deep >= 60 else 'AVOID'
                   if verdict == 'BUY' and value < 45: verdict = 'WATCH'
                   if q < 35 and cash < 35: verdict = 'AVOID'
                   if str(x.get('asset_type','')).upper() in ('ETF','MUTUALFUND'): verdict = 'ETF'
-
+          
                   x.update({
                     'growth_score': growth_score, 'quality_score': quality_score, 'value_score': value_score,
                     'cashflow_score': cashflow_score, 'revisions_score': revisions_score,
@@ -538,7 +585,7 @@ jobs:
                     'opportunity_verdict': opportunity_verdict,
                     'verdict': verdict
                   })
-
+          
                   oldx = previous.get(symbol, {})
                   if oldx.get('deep_score') is not None:
                       x['deep_score_change'] = deep - oldx['deep_score']
@@ -546,7 +593,7 @@ jobs:
                       x['high_score_change'] = high - oldx['high_score']
                   if oldx.get('verdict'):
                       x['previous_verdict'] = oldx['verdict']
-
+          
                   # Explain Deep Score movement using the weighted driver changes.
                   if oldx.get('deep_score') is not None:
                       driver_specs = [
@@ -565,7 +612,7 @@ jobs:
                                   changes.append({'factor': label, 'delta': delta, 'impact': round(impact, 2)})
                       changes.sort(key=lambda z: abs(z['impact']), reverse=True)
                       x['deep_score_change_reasons'] = changes[:3]
-
+          
                   # Make extreme trailing P/E useful rather than hiding it.
                   pe = x.get('pe'); fpe = x.get('forward_pe')
                   if pe is not None and pe >= 100:
@@ -573,71 +620,131 @@ jobs:
                           x['valuation_warning'] = 'Very high trailing P/E; forward earnings are materially stronger.'
                       else:
                           x['valuation_warning'] = 'Very high trailing P/E; inspect earnings quality and forward estimates.'
-
+          
               except Exception as e:
                   x['error'] = str(e)[:200]
-
+          
               out['stocks'].append(x)
               time.sleep(.15)
+          
+          # Shard output; merge job handles snapshots and monthly history.
+          shard_payload = {
+              'updated_at': out['updated_at'], 'source': out['source'],
+              'model_version': out['model_version'], 'stocks': out['stocks'], 'shard': shard
+          }
+          with open(f"shard-{shard}.json", 'w', encoding='utf-8') as fh:
+              json.dump(shard_payload, fh, separators=(',', ':'), ensure_ascii=False)
+          print(f"Wrote shard-{shard}.json with {len(out['stocks'])} stocks")
+          PY
 
-          # Save one historical snapshot per Melbourne calendar day.
-          # The daily job is triggered at 20:30 UTC (~07:30 Melbourne during daylight saving).
-          if is_daily_snapshot_run and snapshot_date:
-              snapshot_path = os.path.join(snapshot_dir, snapshot_date + '.json')
-              snapshot_payload = dict(out)
-              snapshot_payload['snapshot_date'] = snapshot_date
-              snapshot_payload['snapshot_timezone'] = 'Australia/Melbourne'
-              snapshot_payload['snapshot_type'] = 'daily'
-              with open(snapshot_path, 'w', encoding='utf-8') as sfh:
-                  json.dump(snapshot_payload, sfh, separators=(',', ':'), ensure_ascii=False)
-              out['last_daily_snapshot'] = snapshot_date
-              # Keep one monthly valuation snapshot so fair value / upside can be reviewed over time.
-              try:
-                  month_key = snapshot_date[:7]
-                  monthly_dir = 'monthly_snapshots'
-                  os.makedirs(monthly_dir, exist_ok=True)
-                  monthly_path = os.path.join(monthly_dir, month_key + '.json')
-                  monthly_payload = dict(out)
-                  monthly_payload['snapshot_date'] = snapshot_date
-                  monthly_payload['snapshot_month'] = month_key
-                  monthly_payload['snapshot_timezone'] = 'Australia/Melbourne'
-                  monthly_payload['snapshot_type'] = 'monthly_valuation'
-                  with open(monthly_path, 'w', encoding='utf-8') as mfh:
-                      json.dump(monthly_payload, mfh, separators=(',', ':'), ensure_ascii=False)
-                  out['last_monthly_snapshot'] = month_key
-              except Exception:
-                  pass
+      - name: Upload shard
+        uses: actions/upload-artifact@v4
+        with:
+          name: malone-shard-${{ matrix.shard }}
+          path: shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+
+  merge:
+    needs: fetch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: malone-shard-*
+          path: shards
+          merge-multiple: false
+
+      - name: Merge market data and snapshots
+        env:
+          DAILY_SNAPSHOT: ${{ github.event.schedule == '30 20 * * *' }}
+        run: |
+          python <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          from zoneinfo import ZoneInfo
+          
+          files=[]
+          for root, dirs, names in os.walk('shards'):
+              for name in names:
+                  if name.startswith('shard-') and name.endswith('.json'):
+                      files.append(os.path.join(root,name))
+          files=sorted(files)
+          if not files:
+              raise SystemExit('No shard files found')
+          
+          stocks=[]
+          meta=None
+          for path in files:
+              with open(path,'r',encoding='utf-8') as fh:
+                  p=json.load(fh)
+              meta=meta or p
+              stocks.extend(p.get('stocks',[]))
+          
+          # De-duplicate defensively by symbol.
+          by_symbol={}
+          for st in stocks:
+              if st.get('symbol'):
+                  by_symbol[st['symbol']]=st
+          stocks=list(by_symbol.values())
+          stocks.sort(key=lambda x:x.get('symbol',''))
+          
+          now=datetime.now(timezone.utc)
+          mel_now=now.astimezone(ZoneInfo('Australia/Melbourne'))
+          snapshot_date=mel_now.date().isoformat()
+          is_daily=os.environ.get('DAILY_SNAPSHOT','false').lower()=='true'
+          out={
+              'updated_at': now.isoformat(),
+              'source': 'Yahoo Finance via yfinance',
+              'model_version': meta.get('model_version','4.4.3'),
+              'universe_version': 'ASX 500 + US 500',
+              'universe_count': len(stocks),
+              'stocks': stocks,
+          }
+          
+          os.makedirs('snapshots',exist_ok=True)
+          prior_files=sorted([f for f in os.listdir('snapshots') if f.endswith('.json') and f[:10] < snapshot_date])
+          if is_daily:
+              snapshot_payload=dict(out)
+              snapshot_payload.update({'snapshot_date':snapshot_date,'snapshot_timezone':'Australia/Melbourne','snapshot_type':'daily'})
+              with open(os.path.join('snapshots',snapshot_date+'.json'),'w',encoding='utf-8') as fh:
+                  json.dump(snapshot_payload,fh,separators=(',',':'),ensure_ascii=False)
+              out['last_daily_snapshot']=snapshot_date
+              os.makedirs('monthly_snapshots',exist_ok=True)
+              month_key=snapshot_date[:7]
+              monthly_payload=dict(out)
+              monthly_payload.update({'snapshot_date':snapshot_date,'snapshot_month':month_key,'snapshot_timezone':'Australia/Melbourne','snapshot_type':'monthly_valuation'})
+              with open(os.path.join('monthly_snapshots',month_key+'.json'),'w',encoding='utf-8') as fh:
+                  json.dump(monthly_payload,fh,separators=(',',':'),ensure_ascii=False)
+              out['last_monthly_snapshot']=month_key
           elif prior_files:
-              out['last_daily_snapshot'] = prior_files[-1][:10]
-
-          # Compact monthly history used by the website to show how Malone fair value and story
-          # estimates evolve. One record per symbol per month; the current month is overwritten by
-          # the latest daily snapshot, while prior months remain immutable.
-          monthly_history = {}
-          try:
-              monthly_dir = 'monthly_snapshots'
-              os.makedirs(monthly_dir, exist_ok=True)
-              monthly_files = sorted([f for f in os.listdir(monthly_dir) if f.endswith('.json')])
-              for mf in monthly_files:
-                  with open(os.path.join(monthly_dir, mf), 'r', encoding='utf-8') as mfh:
-                      mp = json.load(mfh)
-                  month = mp.get('snapshot_month') or mf[:7]
-                  for st in mp.get('stocks', []):
-                      sym = st.get('symbol')
-                      if not sym: continue
-                      monthly_history.setdefault(sym, []).append({
-                          'month': month, 'price': st.get('price'),
-                          'fair_value': st.get('malone_fair_value'), 'upside_pct': st.get('upside_pct'),
-                          'story_score': st.get('story_score'), 'opportunity_score': st.get('opportunity_score')
-                      })
-              for sym in monthly_history:
-                  monthly_history[sym] = sorted(monthly_history[sym], key=lambda z: z.get('month',''))[-12:]
-          except Exception:
-              monthly_history = {}
-          out['monthly_history'] = monthly_history
-
-          with open('market-data.json', 'w', encoding='utf-8') as fh:
-              json.dump(out, fh, separators=(',', ':'), ensure_ascii=False)
+              out['last_daily_snapshot']=prior_files[-1][:10]
+          
+          monthly_history={}
+          monthly_dir='monthly_snapshots'
+          if os.path.isdir(monthly_dir):
+              for mf in sorted(f for f in os.listdir(monthly_dir) if f.endswith('.json')):
+                  try:
+                      with open(os.path.join(monthly_dir,mf),'r',encoding='utf-8') as fh: mp=json.load(fh)
+                      month=mp.get('snapshot_month') or mf[:7]
+                      for st in mp.get('stocks',[]):
+                          sym=st.get('symbol')
+                          if not sym: continue
+                          monthly_history.setdefault(sym,[]).append({
+                              'month':month,'price':st.get('price'),'fair_value':st.get('malone_fair_value'),
+                              'upside_pct':st.get('upside_pct'),'story_score':st.get('story_score'),
+                              'opportunity_score':st.get('opportunity_score')})
+                  except Exception:
+                      continue
+          for sym in monthly_history:
+              monthly_history[sym]=sorted(monthly_history[sym],key=lambda z:z.get('month',''))[-12:]
+          out['monthly_history']=monthly_history
+          
+          with open('market-data.json','w',encoding='utf-8') as fh:
+              json.dump(out,fh,separators=(',',':'),ensure_ascii=False)
+          print(f'Merged {len(stocks)} securities from {len(files)} shards')
           PY
 
       - name: Commit data
@@ -646,5 +753,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add market-data.json snapshots/
           if [ -d monthly_snapshots ]; then git add monthly_snapshots/; fi
-          git diff --cached --quiet || git commit -m "Update Malone Markets data and daily snapshot"
+          git diff --cached --quiet || git commit -m "Update Malone Markets 1,000-stock data and snapshots"
           git push origin HEAD:${{ github.ref_name }}
