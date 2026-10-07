@@ -170,6 +170,7 @@ jobs:
                     'fcf': fcf,
                     'ocf': ocf,
                     'fcf_yield': (fcf/market_cap)*100 if fcf is not None and market_cap else None,
+                    'p_fcf': (market_cap/fcf) if fcf is not None and market_cap and fcf > 0 else None,
                     'net_debt_ebitda': ((total_debt or 0) - (cash or 0))/ebitda if ebitda and total_debt is not None else None,
                     'dividend_rate': n(info.get('dividendRate')),
                     'dividend_yield': None,
@@ -348,6 +349,33 @@ jobs:
                       x['high_score_change'] = high - oldx['high_score']
                   if oldx.get('verdict'):
                       x['previous_verdict'] = oldx['verdict']
+
+                  # Explain Deep Score movement using the weighted driver changes.
+                  if oldx.get('deep_score') is not None:
+                      driver_specs = [
+                          ('Growth', 'growth_score', .25), ('Quality', 'quality_score', .20),
+                          ('Value', 'value_score', .15), ('Cash Flow', 'cashflow_score', .15),
+                          ('Revisions', 'revisions_score', .10), ('Momentum', 'momentum_score', .05),
+                          ('Dividend', 'dividend_score', .10)
+                      ]
+                      changes = []
+                      for label, key, weight in driver_specs:
+                          oldv = oldx.get(key); newv = x.get(key)
+                          if oldv is not None and newv is not None:
+                              delta = newv - oldv
+                              impact = delta * weight
+                              if delta != 0:
+                                  changes.append({'factor': label, 'delta': delta, 'impact': round(impact, 2)})
+                      changes.sort(key=lambda z: abs(z['impact']), reverse=True)
+                      x['deep_score_change_reasons'] = changes[:3]
+
+                  # Make extreme trailing P/E useful rather than hiding it.
+                  pe = x.get('pe'); fpe = x.get('forward_pe')
+                  if pe is not None and pe >= 100:
+                      if fpe is not None and fpe < pe * 0.5:
+                          x['valuation_warning'] = 'Very high trailing P/E; forward earnings are materially stronger.'
+                      else:
+                          x['valuation_warning'] = 'Very high trailing P/E; inspect earnings quality and forward estimates.'
 
               except Exception as e:
                   x['error'] = str(e)[:200]
