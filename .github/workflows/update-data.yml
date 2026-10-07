@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "7,22,37,52 * * * *"
+    - cron: "30 20 * * *"
 
 permissions:
   contents: write
@@ -15,6 +16,8 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Fetch Yahoo Finance data
+        env:
+          DAILY_SNAPSHOT: ${{ github.event.schedule == '30 20 * * *' }}
         run: |
           python -m pip install --disable-pip-version-check -q yfinance pandas
           python <<'PY'
@@ -31,6 +34,7 @@ jobs:
               symbols = ['ALL.AX','BHP.AX','CSL.AX','FMG.AX','GNP.AX','GTUM.AX','HACK.AX','JBH.AX','QAN.AX','RMD.AX','TLX.AX','VAS.AX','XRO.AX','AMZN','ANET','AVGO','CSCO','ETN','GEV','GOOG','JPM','LLY','META','MSFT','MU','NVDA','PANW','S','V','ZS']
 
           now = datetime.now(timezone.utc)
+          is_daily_snapshot_run = os.environ.get("DAILY_SNAPSHOT", "false").lower() == "true"
           out = {
             'updated_at': now.isoformat(),
             'source': 'Yahoo Finance via yfinance',
@@ -38,14 +42,27 @@ jobs:
             'stocks': []
           }
 
-          # Preserve the previous snapshot so we can show score movement between runs.
+          # Daily snapshot baseline: compare against the most recent saved daily snapshot,
+          # not the previous 15-minute refresh. This keeps score movement meaningful.
           previous = {}
+          snapshot_date = None
           try:
-              with open('market-data.json', 'r', encoding='utf-8') as fh:
-                  old = json.load(fh)
-              previous = {x.get('symbol'): x for x in old.get('stocks', [])}
+              from zoneinfo import ZoneInfo
+              mel_now = now.astimezone(ZoneInfo('Australia/Melbourne'))
+              snapshot_date = mel_now.date().isoformat()
           except Exception:
-              previous = {}
+              snapshot_date = now.date().isoformat()
+
+          snapshot_dir = 'snapshots'
+          os.makedirs(snapshot_dir, exist_ok=True)
+          prior_files = sorted([f for f in os.listdir(snapshot_dir) if f.endswith('.json') and f[:10] < snapshot_date])
+          if prior_files:
+              try:
+                  with open(os.path.join(snapshot_dir, prior_files[-1]), 'r', encoding='utf-8') as fh:
+                      old = json.load(fh)
+                  previous = {x.get('symbol'): x for x in old.get('stocks', [])}
+              except Exception:
+                  previous = {}
 
           def n(v):
               try:
@@ -401,6 +418,20 @@ jobs:
               out['stocks'].append(x)
               time.sleep(.15)
 
+          # Save one historical snapshot per Melbourne calendar day.
+          # The daily job is triggered at 20:30 UTC (~07:30 Melbourne during daylight saving).
+          if is_daily_snapshot_run and snapshot_date:
+              snapshot_path = os.path.join(snapshot_dir, snapshot_date + '.json')
+              snapshot_payload = dict(out)
+              snapshot_payload['snapshot_date'] = snapshot_date
+              snapshot_payload['snapshot_timezone'] = 'Australia/Melbourne'
+              snapshot_payload['snapshot_type'] = 'daily'
+              with open(snapshot_path, 'w', encoding='utf-8') as sfh:
+                  json.dump(snapshot_payload, sfh, separators=(',', ':'), ensure_ascii=False)
+              out['last_daily_snapshot'] = snapshot_date
+          elif prior_files:
+              out['last_daily_snapshot'] = prior_files[-1][:10]
+
           with open('market-data.json', 'w', encoding='utf-8') as fh:
               json.dump(out, fh, separators=(',', ':'), ensure_ascii=False)
           PY
@@ -409,6 +440,6 @@ jobs:
         run: |
           git config user.name "malone-markets-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add market-data.json
-          git diff --cached --quiet || git commit -m "Upgrade Malone Markets scoring and data"
+          git add market-data.json snapshots/
+          git diff --cached --quiet || git commit -m "Update Malone Markets data and daily snapshot"
           git push
