@@ -119,6 +119,7 @@ jobs:
                   content = item.get('content') if isinstance(item.get('content'), dict) else item
                   title = content.get('title') or item.get('title')
                   link = content.get('canonicalUrl', {}).get('url') if isinstance(content.get('canonicalUrl'), dict) else None
+                  if not link and isinstance(content.get('clickThroughUrl'), dict): link = content.get('clickThroughUrl', {}).get('url')
                   link = link or content.get('link') or item.get('link') or item.get('url')
                   publisher = content.get('provider', {}).get('displayName') if isinstance(content.get('provider'), dict) else None
                   publisher = publisher or content.get('publisher') or item.get('publisher')
@@ -170,7 +171,9 @@ jobs:
                     'ocf': ocf,
                     'fcf_yield': (fcf/market_cap)*100 if fcf is not None and market_cap else None,
                     'net_debt_ebitda': ((total_debt or 0) - (cash or 0))/ebitda if ebitda and total_debt is not None else None,
-                    'dividend_yield': pct(info.get('dividendYield')),
+                    'dividend_rate': n(info.get('dividendRate')),
+                    'dividend_yield': None,
+                    'dividend_yield_raw': n(info.get('dividendYield')),
                     'payout_ratio': pct(info.get('payoutRatio')),
                     'target_mean': n(info.get('targetMeanPrice')),
                     'target_low': n(info.get('targetLowPrice')),
@@ -183,6 +186,14 @@ jobs:
                     'currency': info.get('currency'),
                     'asset_type': info.get('quoteType') or info.get('typeDisp')
                   })
+
+                  # Normalize dividend yield from annual cash dividend / price when available.
+                  if x.get('dividend_rate') is not None and price:
+                      calc_yield = (x['dividend_rate'] / price) * 100
+                      if 0 <= calc_yield <= 20: x['dividend_yield'] = calc_yield
+                  if x.get('dividend_yield') is None and x.get('dividend_yield_raw') is not None:
+                      raw = x['dividend_yield_raw']; candidate = raw * 100 if abs(raw) <= 2 else raw
+                      if 0 <= candidate <= 20: x['dividend_yield'] = candidate
 
                   # Analyst forward estimates and EPS trend/revisions.
                   ee = safe_call(lambda: t.get_earnings_estimate(), None)
@@ -232,14 +243,27 @@ jobs:
                           idx = pd.to_datetime(ud.index, utc=True, errors='coerce')
                           recent = ud[idx >= cutoff]
                           actions = recent['action'].astype(str).str.lower() if 'action' in recent.columns else pd.Series(dtype=str)
-                          x['upgrades_90d'] = int(actions.str.contains('upgrade').sum())
-                          x['downgrades_90d'] = int(actions.str.contains('downgrade').sum())
+                          to_grades = recent['toGrade'].astype(str).str.lower() if 'toGrade' in recent.columns else pd.Series(dtype=str)
+                          from_grades = recent['fromGrade'].astype(str).str.lower() if 'fromGrade' in recent.columns else pd.Series(dtype=str)
+                          up_mask = actions.str.contains(r'upgrade|raised|raise|overweight|outperform|buy', regex=True, na=False)
+                          down_mask = actions.str.contains(r'downgrade|lowered|lower|underweight|underperform|sell', regex=True, na=False)
+                          if not up_mask.any() and len(recent):
+                              up_mask = to_grades.str.contains(r'buy|outperform|overweight|strong buy', regex=True, na=False) & ~from_grades.str.contains(r'buy|outperform|overweight|strong buy', regex=True, na=False)
+                          if not down_mask.any() and len(recent):
+                              down_mask = to_grades.str.contains(r'sell|underperform|underweight|reduce', regex=True, na=False) & ~from_grades.str.contains(r'sell|underperform|underweight|reduce', regex=True, na=False)
+                          x['upgrades_90d'] = int(up_mask.sum())
+                          x['downgrades_90d'] = int(down_mask.sum())
                   except Exception:
                       pass
 
                   # News with robust timestamp normalization.
-                  news = safe_call(lambda: t.get_news(count=5), [])
-                  x['news'] = normalize_news(news)
+                  news = safe_call(lambda: t.get_news(count=8), [])
+                  normalized_news = normalize_news(news)
+                  if not normalized_news:
+                      search = safe_call(lambda: yf.Search(symbol, news_count=8), None)
+                      search_news = getattr(search, 'news', []) if search is not None else []
+                      normalized_news = normalize_news(search_news)
+                  x['news'] = normalized_news
 
                   # ---------- scoring ----------
                   # Growth: forward + current growth, with long-term estimate as a bonus.
@@ -291,7 +315,13 @@ jobs:
                       analyst = clamp(analyst*0.6 + clamp(50 + ((x['target_mean']/price)-1)*100)*0.4)
 
                   momentum = clamp(100*price/x['high_52w']) if price and x.get('high_52w') else 50
-                  dividend = clamp((x.get('dividend_yield') or 0)*20)
+                  dividend_yield = x.get('dividend_yield') or 0
+                  dividend = clamp(15 + dividend_yield*17)
+                  payout = x.get('payout_ratio')
+                  if payout is not None:
+                      if payout > 100: dividend -= 25
+                      elif payout > 80: dividend -= 10
+                  dividend = clamp(dividend)
 
                   # Deep score is deliberately fundamental-heavy.
                   deep = round(.25*g + .20*q + .15*value + .15*cash + .10*revisions + .05*momentum + .10*dividend)
@@ -299,7 +329,7 @@ jobs:
                   high = round(.35*g + .25*q + .15*momentum + .25*analyst)
 
                   verdict = 'BUY' if deep >= 82 and high >= 75 else 'WATCH' if deep >= 72 and high >= 65 else 'HOLD' if deep >= 60 else 'AVOID'
-                  if verdict == 'BUY' and value < 40: verdict = 'WATCH'
+                  if verdict == 'BUY' and value < 45: verdict = 'WATCH'
                   if q < 35 and cash < 35: verdict = 'AVOID'
                   if str(x.get('asset_type','')).upper() in ('ETF','MUTUALFUND'): verdict = 'ETF'
 
