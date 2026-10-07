@@ -1,5 +1,10 @@
 name: Update Malone Markets data
 
+# Prevent overlapping scheduled/manual runs from racing on main.
+concurrency:
+  group: malone-markets-data
+  cancel-in-progress: false
+
 on:
   workflow_dispatch:
   schedule:
@@ -754,4 +759,9 @@ jobs:
           git add market-data.json snapshots/
           if [ -d monthly_snapshots ]; then git add monthly_snapshots/; fi
           git diff --cached --quiet || git commit -m "Update Malone Markets 1,000-stock data and snapshots"
+
+          # Rebase the generated data commit onto the latest remote main in
+          # case another commit landed while the four shards were running.
+          git fetch origin main
+          git rebase origin/main
           git push origin HEAD:${{ github.ref_name }}
