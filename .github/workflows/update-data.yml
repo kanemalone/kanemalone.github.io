@@ -324,10 +324,27 @@ jobs:
                       elif payout > 80: dividend -= 10
                   dividend = clamp(dividend)
 
-                  # Deep score is deliberately fundamental-heavy.
-                  deep = round(.25*g + .20*q + .15*value + .15*cash + .10*revisions + .05*momentum + .10*dividend)
-                  # High-level is the faster screening layer.
-                  high = round(.35*g + .25*q + .15*momentum + .25*analyst)
+                  # Round the displayed component scores FIRST, then calculate the headline scores
+                  # from those exact displayed integers. This makes every score mathematically auditable.
+                  growth_score = round(g)
+                  quality_score = round(q)
+                  value_score = round(value)
+                  cashflow_score = round(cash)
+                  revisions_score = round(revisions)
+                  momentum_score = round(momentum)
+                  dividend_score = round(dividend)
+                  analyst_score = round(analyst)
+
+                  # Deep score: the headline is calculated from the exact driver values shown in the UI.
+                  deep_components = [
+                      growth_score * .25, quality_score * .20, value_score * .15,
+                      cashflow_score * .15, revisions_score * .10, momentum_score * .05,
+                      dividend_score * .10
+                  ]
+                  deep = round(sum(deep_components))
+
+                  # High-level score: same rule — calculate from the exact displayed component values.
+                  high = round(growth_score * .35 + quality_score * .25 + momentum_score * .15 + analyst_score * .25)
 
                   verdict = 'BUY' if deep >= 82 and high >= 75 else 'WATCH' if deep >= 72 and high >= 65 else 'HOLD' if deep >= 60 else 'AVOID'
                   if verdict == 'BUY' and value < 45: verdict = 'WATCH'
@@ -335,10 +352,11 @@ jobs:
                   if str(x.get('asset_type','')).upper() in ('ETF','MUTUALFUND'): verdict = 'ETF'
 
                   x.update({
-                    'growth_score': round(g), 'quality_score': round(q), 'value_score': round(value),
-                    'cashflow_score': round(cash), 'revisions_score': round(revisions),
-                    'momentum_score': round(momentum), 'dividend_score': round(dividend),
-                    'analyst_score': round(analyst), 'high_score': high, 'deep_score': deep,
+                    'growth_score': growth_score, 'quality_score': quality_score, 'value_score': value_score,
+                    'cashflow_score': cashflow_score, 'revisions_score': revisions_score,
+                    'momentum_score': momentum_score, 'dividend_score': dividend_score,
+                    'analyst_score': analyst_score, 'high_score': high, 'deep_score': deep,
+                    'deep_score_components': deep_components,
                     'verdict': verdict
                   })
 
