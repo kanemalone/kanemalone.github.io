@@ -1,0 +1,107 @@
+name: Update Malone Markets data
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+permissions:
+  contents: write
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Fetch and score market data
+        run: |
+          python -m pip install --disable-pip-version-check -q yfinance pandas
+          python <<'PY'
+          import yfinance as yf, json, math, time
+          from datetime import datetime, timezone
+          symbols=['ALL.AX', 'BHP.AX', 'CSL.AX', 'FMG.AX', 'GNP.AX', 'GTUM.AX', 'HACK.AX', 'JBH.AX', 'QAN.AX', 'RMD.AX', 'TLX.AX', 'VAS.AX', 'XRO.AX', 'AMZN', 'ANET', 'AVGO', 'CSCO', 'ETN', 'GEV', 'GOOG', 'JPM', 'LLY', 'META', 'MSFT', 'MU', 'NVDA', 'PANW', 'S', 'V', 'ZS']
+          etfs={"GTUM.AX","HACK.AX","VAS.AX"}
+          out={"updated_at":datetime.now(timezone.utc).isoformat(),"source":"Yahoo Finance via yfinance","stocks":[]}
+          def n(x):
+              try:
+                  x=float(x); return None if math.isnan(x) or math.isinf(x) else x
+              except: return None
+          def pct(x):
+              x=n(x); return x*100 if x is not None and abs(x)<=1.5 else x
+          def avg(a,d=50): return sum(a)/len(a) if a else d
+          def clamp(x): return max(0,min(100,x))
+          for s in symbols:
+              x={"symbol":s}
+              try:
+                  t=yf.Ticker(s)
+                  try: i=t.get_info() or {}
+                  except: i={}
+                  try: fi=t.fast_info or {}
+                  except: fi={}
+                  price=n(i.get("currentPrice")) or n(fi.get("last_price"))
+                  prev=n(i.get("previousClose")) or n(fi.get("previous_close"))
+                  day=((price/prev)-1)*100 if price and prev else None
+                  div_rate=n(i.get("dividendRate"))
+                  div_yield=(div_rate/price*100) if div_rate is not None and price else None
+                  if div_yield is None:
+                      raw=n(i.get("dividendYield")); div_yield=raw if raw is not None and raw>2 else (raw*100 if raw is not None else None)
+                  x.update(price=price,previous_close=prev,day_pct=day,pe=n(i.get("trailingPE")),forward_pe=n(i.get("forwardPE")),peg=n(i.get("pegRatio")),
+                    ps=n(i.get("priceToSalesTrailing12Months")),pb=n(i.get("priceToBook")),ev_ebitda=n(i.get("enterpriseToEbitda")),
+                    revenue_growth=pct(i.get("revenueGrowth")),earnings_growth=pct(i.get("earningsGrowth")),profit_margin=pct(i.get("profitMargins")),
+                    operating_margin=pct(i.get("operatingMargins")),roe=pct(i.get("returnOnEquity")),roa=pct(i.get("returnOnAssets")),
+                    fcf=n(i.get("freeCashflow")),ocf=n(i.get("operatingCashflow")),debt_equity=n(i.get("debtToEquity")),
+                    current_ratio=n(i.get("currentRatio")),dividend_yield=div_yield,dividend_rate=div_rate,
+                    target_mean=n(i.get("targetMeanPrice")),target_low=n(i.get("targetLowPrice")),target_high=n(i.get("targetHighPrice")),
+                    recommendation=i.get("recommendationKey"),market_cap=n(i.get("marketCap")),high_52w=n(i.get("fiftyTwoWeekHigh")),
+                    low_52w=n(i.get("fiftyTwoWeekLow")),sector=i.get("sector"),industry=i.get("industry"),currency=i.get("currency"))
+                  try:
+                      er=t.get_eps_revisions(as_dict=True) or {}
+                      up=sum(float(v.get("upLast30days") or 0) for v in er.values() if isinstance(v,dict))
+                      down=sum(float(v.get("downLast30days") or 0) for v in er.values() if isinstance(v,dict))
+                  except: up=down=0
+                  x.update(eps_revisions_up_30d=up,eps_revisions_down_30d=down,eps_revision_balance_30d=up-down)
+                  if s in etfs:
+                      x.update(high_score=None,deep_score=None,verdict="ETF",score_type="ETF")
+                  else:
+                      g=avg([clamp(50+v*2.5) for v in [x["revenue_growth"],x["earnings_growth"]] if v is not None])
+                      q=avg([clamp(50+v*1.8) for v in [x["profit_margin"],x["operating_margin"],x["roe"],x["roa"]] if v is not None])
+                      vals=[v for v in [x["pe"],x["forward_pe"],x["ev_ebitda"]] if v is not None and v>0]
+                      value_parts=[clamp(100-(v-10)*2.4) for v in vals]
+                      if x["peg"] is not None and x["peg"]>0: value_parts.append(clamp(100-(x["peg"]-0.8)*55))
+                      value=avg(value_parts)
+                      cash=100 if x["fcf"] is not None and x["ocf"] is not None and x["fcf"]>0 and x["ocf"]>0 else 55
+                      revision=clamp(55+(x["eps_revision_balance_30d"] or 0)*8)
+                      if x["recommendation"] in ("strong_buy","buy"): revision=min(100,revision+15)
+                      elif x["recommendation"] in ("sell","strong_sell"): revision=max(0,revision-20)
+                      momentum=clamp((price-x["low_52w"])/(x["high_52w"]-x["low_52w"])*100) if price and x["low_52w"] and x["high_52w"] and x["high_52w"]>x["low_52w"] else 50
+                      dividend=clamp((div_yield or 0)*12.5)
+                      high=round(.35*g+.25*q+.20*momentum+.20*revision)
+                      deep=round(.25*g+.20*q+.15*value+.15*cash+.10*revision+.10*momentum+.05*dividend)
+                      verdict="BUY" if deep>=82 and high>=75 else "WATCH" if deep>=72 and high>=65 else "HOLD" if deep>=60 else "AVOID"
+                      if verdict=="BUY" and value<40: verdict="WATCH"
+                      if q<35 and cash<35: verdict="AVOID"
+                      pos=[]; cau=[]
+                      if g>=75: pos.append("strong growth")
+                      elif g<45: cau.append("weak growth")
+                      if q>=75: pos.append("high quality")
+                      elif q<45: cau.append("quality/margins")
+                      if value>=75: pos.append("attractive valuation")
+                      elif value<45: cau.append("valuation")
+                      if revision>=75: pos.append("positive revisions")
+                      elif revision<45: cau.append("weak revisions")
+                      if momentum>=75: pos.append("strong momentum")
+                      elif momentum<40: cau.append("weak momentum")
+                      if cash>=80: pos.append("positive cash flow")
+                      x.update(high_score=high,deep_score=deep,verdict=verdict,score_type="EQUITY",growth_score=round(g),quality_score=round(q),value_score=round(value),
+                               cashflow_score=round(cash),revision_score=round(revision),momentum_score=round(momentum),dividend_score=round(dividend),positives=pos[:3],cautions=cau[:3])
+                  try:
+                      x["news"]=[{"title":a.get("title"),"publisher":a.get("publisher"),"link":a.get("link")} for a in (t.get_news(count=3) or [])[:3]]
+                  except: x["news"]=[]
+              except Exception as e: x["error"]=str(e)[:180]
+              out["stocks"].append(x); time.sleep(.2)
+          open("market-data.json","w").write(json.dumps(out,separators=(",",":")))
+          PY
+      - name: Commit updated data
+        run: |
+          git config user.name "malone-markets-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add market-data.json
+          git diff --cached --quiet || git commit -m "Update Malone Markets data"
+          git push
