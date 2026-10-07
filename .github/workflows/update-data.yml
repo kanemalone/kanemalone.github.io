@@ -229,7 +229,9 @@ jobs:
               out['stocks'].append(x)
               time.sleep(.15)
 
-          with open('market-data.json','w') as f: json.dump(out,f,separators=(',',':'))
+          with open('market-data.json','w') as f: json.dump(out,f,separators=(',',':'),allow_nan=False)
+          with open('market-data.json','r',encoding='utf-8') as f: check=json.load(f,parse_constant=lambda v: (_ for _ in ()).throw(ValueError(v)))
+          if len(check.get('stocks',[])) != len(symbols): raise RuntimeError(f"Expected {len(symbols)} stocks, got {len(check.get('stocks',[]))}")
           PY
       - name: Commit updated data
         run: |
