@@ -419,7 +419,7 @@ jobs:
                       normalized_news = normalize_news(search_news)
                   x['news'] = normalized_news
           
-                          # ---------- Malone Score V6.0 ----------
+                  # ---------- Malone Score V6.0 ----------
                   # One 0-100 score built from seven independent factors. The previous
                   # Deep/High/Story/Opportunity stack is no longer used for decisions.
                   import math as _math
