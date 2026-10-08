@@ -147,7 +147,7 @@ jobs:
           out = {
             'updated_at': now.isoformat(),
             'source': 'Yahoo Finance via yfinance',
-            'model_version': '6.0.0',
+            'model_version': '5.3.0',
             'stocks': []
           }
           
@@ -419,144 +419,271 @@ jobs:
                       normalized_news = normalize_news(search_news)
                   x['news'] = normalized_news
           
-                  # ---------- Malone Score V6.0 ----------
-                  # One 0-100 score built from seven independent factors. The previous
-                  # Deep/High/Story/Opportunity stack is no longer used for decisions.
-                  import math as _math
-
-                  def score_linear(v, center=0, scale=1.0):
-                      if v is None: return None
-                      return clamp(50 + (v - center) * scale)
-
-                  def score_multiple(v, fair=20, sensitivity=2.0):
-                      if v is None or v <= 0: return None
-                      return clamp(75 - (v - fair) * sensitivity)
-
-                  def mean_scores(parts, default=50):
-                      vals=[v*w for v,w in parts if v is not None]
-                      weights=[w for v,w in parts if v is not None]
-                      return sum(vals)/sum(weights) if weights else default
-
-                  # 1. Growth (20%)
-                  growth_score=round(mean_scores([
-                      (score_linear(x.get('revenue_growth'),0,1.6),.20),
-                      (score_linear(x.get('earnings_growth'),0,1.4),.20),
-                      (score_linear(x.get('forward_eps_growth'),0,1.8),.30),
-                      (score_linear(x.get('forward_revenue_growth'),0,1.5),.15),
-                      (score_linear(x.get('long_term_growth'),0,1.2),.15),
-                  ]))
-
-                  # 2. Quality (20%)
-                  quality_score=round(mean_scores([
-                      (score_linear(x.get('profit_margin'),0,1.4),.20),
-                      (score_linear(x.get('operating_margin'),0,1.3),.20),
-                      (score_linear(x.get('roe'),10,1.0),.20),
-                      (score_linear(x.get('roic'),10,1.15),.25),
-                      (score_linear(x.get('roa'),5,2.0),.15),
-                  ]))
-
-                  # 3. Financial strength / cash generation (15%). Existence of FCF/OCF
-                  # is no longer worth an automatic 80. The score reflects cash yield,
-                  # leverage and cash-flow quality. Banks/real estate are treated differently
-                  # because conventional net-debt/EBITDA is not comparable for them.
-                  financial_parts=[]
+                  # ---------- scoring ----------
+                  # Growth: forward + current growth, with long-term estimate as a bonus.
+                  growth_parts = []
+                  for v, w in [(x.get('revenue_growth'), .20), (x.get('earnings_growth'), .20),
+                               (x.get('forward_eps_growth'), .25), (x.get('forward_revenue_growth'), .20),
+                               (x.get('long_term_growth'), .15)]:
+                      if v is not None:
+                          growth_parts.append((clamp(50 + v*1.5), w))
+                  g = sum(v*w for v,w in growth_parts)/sum(w for _,w in growth_parts) if growth_parts else 50
+          
+                  quality_vals = []
+                  for v, scale in [(x.get('profit_margin'), 1.5), (x.get('operating_margin'), 1.5),
+                                   (x.get('roe'), 1.2), (x.get('roa'), 2.0), (x.get('roic'), 1.2)]:
+                      if v is not None:
+                          quality_vals.append(clamp(50 + v*scale))
+                  q = avg(quality_vals)
+          
+                  valuation_parts = []
+                  for v, base, scale in [(x.get('pe'), 20, 2.0), (x.get('forward_pe'), 18, 2.2),
+                                          (x.get('ps'), 5, 6), (x.get('pb'), 3, 7), (x.get('ev_ebitda'), 15, 2)]:
+                      if v is not None and v >= 0:
+                          valuation_parts.append(clamp(75 - (v-base)*scale))
                   if x.get('fcf_yield') is not None:
-                      financial_parts.append((clamp(50+x['fcf_yield']*5),.30))
-                  sector_name=str(x.get('sector') or '').lower()
-                  if x.get('net_debt_ebitda') is not None and sector_name not in ('financial services','real estate'):
-                      financial_parts.append((clamp(78-x['net_debt_ebitda']*12),.30))
-                  if x.get('fcf') is not None and x.get('ocf') is not None:
-                      financial_parts.append((75 if x['fcf']>0 and x['ocf']>0 else 58 if x['ocf']>0 else 35,.20))
-                  if x.get('payout_ratio') is not None:
-                      financial_parts.append((clamp(85-max(0,x['payout_ratio']-50)*1.0),.10))
-                  if sector_name in ('financial services','real estate'):
-                      financial_parts.append((score_linear(x.get('roe'),10,1.0),.25))
-                  financial_score=round(mean_scores(financial_parts,50))
-
-                  # 4. Valuation (20%). Fair value is included, but analyst targets are
-                  # not separately counted here because they already feed the Fair Value engine.
-                  valuation_parts=[]
-                  if x.get('forward_pe') is not None: valuation_parts.append((score_multiple(x['forward_pe'],18,2.0),.22))
-                  if x.get('pe') is not None: valuation_parts.append((score_multiple(x['pe'],20,1.7),.13))
-                  if x.get('peg') is not None and x['peg']>0: valuation_parts.append((clamp(75-(x['peg']-1)*25),.12))
-                  if x.get('ev_ebitda') is not None: valuation_parts.append((score_multiple(x['ev_ebitda'],15,1.8),.15))
-                  if x.get('pb') is not None: valuation_parts.append((score_multiple(x['pb'],3,8),.10))
-                  if x.get('fcf_yield') is not None: valuation_parts.append((clamp(50+x['fcf_yield']*6),.13))
-                  if upside_pct is not None:
-                      fv_score=clamp(50+45*_math.tanh(upside_pct/60.0))
-                      valuation_parts.append((fv_score,.15))
-                  else:
-                      fv_score=50
-                  valuation_score=round(mean_scores(valuation_parts,50))
-
-                  # 5. Momentum (10%). A true 52-week range position is preferable to
-                  # simply price / 52-week high: stocks near their lows score poorly.
-                  momentum_score=50
-                  if price and x.get('high_52w') and x.get('low_52w') and x['high_52w']>x['low_52w']:
-                      range_position=(price-x['low_52w'])/(x['high_52w']-x['low_52w'])
-                      momentum_score=round(clamp(10+range_position*80))
-
-                  # 6. Earnings revisions (10%)
-                  revision_score=50
-                  up=x.get('eps_up_30d') or 0; down=x.get('eps_down_30d') or 0
-                  revision_score += min(25,up*6)-min(25,down*6)
-                  revision_score += min(12,(x.get('upgrades_90d') or 0)*4)
-                  revision_score -= min(12,(x.get('downgrades_90d') or 0)*4)
-                  if x.get('eps_trend_30d') is not None: revision_score += clamp(x['eps_trend_30d']*1.5,-15,15)
-                  if x.get('latest_surprise_pct') is not None: revision_score += clamp(x['latest_surprise_pct']*.8,-12,12)
-                  revisions_score=round(clamp(revision_score))
-
-                  # 7. Dividend / shareholder return (5%)
-                  dividend_score=clamp(20+(x.get('dividend_yield') or 0)*12)
-                  payout=x.get('payout_ratio')
+                      valuation_parts.append(clamp(50 + x['fcf_yield']*8))
+                  value = avg(valuation_parts)
+          
+                  cash_parts = []
+                  if x.get('fcf') is not None: cash_parts.append(80)
+                  if x.get('ocf') is not None: cash_parts.append(80)
+                  if x.get('fcf_yield') is not None: cash_parts.append(clamp(50 + x['fcf_yield']*8))
+                  if x.get('net_debt_ebitda') is not None:
+                      cash_parts.append(clamp(80 - x['net_debt_ebitda']*15))
+                  cash = avg(cash_parts, 55)
+          
+                  revision_base = 50
+                  up = x.get('eps_up_30d') or 0
+                  down = x.get('eps_down_30d') or 0
+                  revision_base += min(30, up*7) - min(30, down*7)
+                  revision_base += min(15, (x.get('upgrades_90d') or 0)*5)
+                  revision_base -= min(15, (x.get('downgrades_90d') or 0)*5)
+                  if x.get('eps_trend_30d') is not None:
+                      revision_base += clamp(x['eps_trend_30d']*2, -20, 20)
+                  revisions = clamp(revision_base)
+          
+                  rec = x.get('recommendation')
+                  analyst = 80 if rec in ('strong_buy','buy') else 55 if rec == 'hold' else 25 if rec in ('sell','strong_sell') else 50
+                  if x.get('target_mean') and price:
+                      analyst = clamp(analyst*0.6 + clamp(50 + ((x['target_mean']/price)-1)*100)*0.4)
+          
+                  momentum = clamp(100*price/x['high_52w']) if price and x.get('high_52w') else 50
+                  dividend_yield = x.get('dividend_yield') or 0
+                  dividend = clamp(15 + dividend_yield*17)
+                  payout = x.get('payout_ratio')
                   if payout is not None:
-                      if payout>100: dividend_score-=25
-                      elif payout>80: dividend_score-=10
-                  dividend_score=round(clamp(dividend_score))
-
-                  # Fair value was calculated above and is deliberately not a separate headline.
-                  # Round the seven visible component scores first, then calculate the headline.
-                  malone_components=[
-                      growth_score*.20, quality_score*.20, financial_score*.15,
-                      valuation_score*.20, momentum_score*.10, revisions_score*.10,
-                      dividend_score*.05
+                      if payout > 100: dividend -= 25
+                      elif payout > 80: dividend -= 10
+                  dividend = clamp(dividend)
+          
+                  # ---------- story + fair value ----------
+                  # Story is a forward-looking quantitative proxy, not a subjective narrative.
+                  # It rewards growth runway, estimate momentum, earnings delivery, analyst upside
+                  # and legitimate reinvestment when weak FCF is explained by R&D/capex.
+                  target_upside = ((x['target_mean'] / price) - 1) * 100 if x.get('target_mean') and price else None
+                  eps_growth = x.get('forward_eps_growth')
+                  lt_growth = x.get('long_term_growth')
+                  rev_growth = x.get('forward_revenue_growth')
+                  revision_signal = revisions
+                  surprise_signal = clamp(50 + (x.get('latest_surprise_pct') or 0) * 2) if x.get('latest_surprise_pct') is not None else 50
+                  target_signal = clamp(50 + (target_upside or 0) * 1.2) if target_upside is not None else 50
+                  runway_signal = avg([
+                      clamp(50 + (eps_growth or 0) * 1.25) if eps_growth is not None else None,
+                      clamp(50 + (lt_growth or 0) * 1.10) if lt_growth is not None else None,
+                      clamp(50 + (rev_growth or 0) * 1.25) if rev_growth is not None else None
+                  ], 50)
+                  reinvestment_context = 50
+                  investment_reason = None
+                  if fcf is not None and fcf < 0:
+                      rd_intensity = (x.get('rd_expense') / max(abs(x.get('revenue_estimate') or 0), 1)) * 100 if x.get('rd_expense') is not None and x.get('revenue_estimate') else None
+                      capex_intensity = (x.get('capex') / max(abs(x.get('revenue_estimate') or 0), 1)) * 100 if x.get('capex') is not None and x.get('revenue_estimate') else None
+                      if x.get('ocf') is not None and x.get('ocf') > 0 and ((rd_intensity or 0) >= 3 or (capex_intensity or 0) >= 5):
+                          reinvestment_context = 82
+                          reasons = []
+                          if rd_intensity is not None and rd_intensity >= 3: reasons.append(f'R&D intensity {rd_intensity:.1f}%')
+                          if capex_intensity is not None and capex_intensity >= 5: reasons.append(f'capex intensity {capex_intensity:.1f}%')
+                          investment_reason = 'Positive operating cash flow with deliberate investment (' + ', '.join(reasons) + ').'
+                      else:
+                          reinvestment_context = 35
+                  story = round(clamp(
+                      runway_signal * .35 + revision_signal * .20 + surprise_signal * .10 +
+                      target_signal * .15 + analyst * .10 + reinvestment_context * .10
+                  ))
+          
+                  # ---------- Malone fair value v2 ----------
+                  # The first version could become too optimistic because EPS growth directly drove
+                  # a very large justified P/E (up to 36x) and the analyst target then received a full
+                  # extra weight. v2 uses a conservative next-year earnings multiple, a positive-FCF
+                  # cross-check and the analyst target as a separate reference. Each anchor is gently
+                  # winsorised around the current price so one extreme input cannot dominate the result.
+                  # This is a valuation estimate, not a promised share price.
+                  fair_anchors = []
+                  fair_weights = []
+                  fair_methods = []
+          
+                  # Extreme one-year EPS changes can be distorted when the prior EPS base is near
+                  # zero/negative (e.g. TLX). Use them only inside a sensible range and lean on the
+                  # long-term estimate as the second input.
+                  clean_eps_growth = eps_growth if eps_growth is not None and -50 <= eps_growth <= 100 else None
+                  clean_lt_growth = lt_growth if lt_growth is not None and -10 <= lt_growth <= 40 else None
+                  valuation_growth = avg([clean_eps_growth, clean_lt_growth], 0)
+                  valuation_growth = clamp(valuation_growth, 0, 35)
+          
+                  # Justified P/E: growth matters, but not one-for-one. Quality can move the multiple
+                  # modestly; the hard 10x-26x guardrail prevents extreme growth estimates producing
+                  # unrealistic fair values.
+                  roic_v = x.get('roic')
+                  quality_premium = clamp(((roic_v or 10) - 10) * .10, -2, 2)
+                  justified_pe = clamp(14 + valuation_growth * .22 + quality_premium, 10, 26)
+                  earnings_fv = None
+                  if x.get('eps_estimate') is not None and x.get('eps_estimate') > 0:
+                      earnings_fv = x['eps_estimate'] * justified_pe
+                      if price:
+                          earnings_fv = clamp(earnings_fv, price * .60, price * 1.75)
+                      fair_anchors.append(earnings_fv)
+                      fair_weights.append(.50)
+                      fair_methods.append('forward EPS × justified P/E')
+          
+                  fcf_fv = None
+                  if fcf is not None and fcf > 0 and shares_out:
+                      fcf_per_share = fcf / shares_out
+                      required_yield = clamp(6.75 - max(0, min(30, valuation_growth)) * .04, 5.0, 7.0)
+                      fcf_fv = fcf_per_share / (required_yield / 100)
+                      if price:
+                          fcf_fv = clamp(fcf_fv, price * .60, price * 1.75)
+                      fair_anchors.append(fcf_fv)
+                      fair_weights.append(.20)
+                      fair_methods.append('FCF yield cross-check')
+          
+                  analyst_fv = x.get('target_mean') if x.get('target_mean') and x.get('target_mean') > 0 else None
+                  if analyst_fv is not None:
+                      if price:
+                          analyst_fv = clamp(analyst_fv, price * .60, price * 1.75)
+                      fair_anchors.append(analyst_fv)
+                      fair_weights.append(.30)
+                      fair_methods.append('analyst mean target')
+          
+                  # Reallocate missing FCF weight rather than treating missing cash-flow data as zero.
+                  if fcf_fv is None and fair_anchors:
+                      if earnings_fv is not None and analyst_fv is not None:
+                          fair_weights = [.60, .40]
+                      elif earnings_fv is not None or analyst_fv is not None:
+                          fair_weights = [1.0]
+                  elif fcf_fv is not None and earnings_fv is None and analyst_fv is not None:
+                      fair_weights = [.45, .55]
+          
+                  if fair_anchors:
+                      weighted = sum(v*w for v,w in zip(fair_anchors, fair_weights)) / sum(fair_weights)
+                      malone_fair_value = round(weighted, 2)
+                      fair_low = round(malone_fair_value * .85, 2)
+                      fair_high = round(malone_fair_value * 1.15, 2)
+                      upside_pct = ((malone_fair_value / price) - 1) * 100 if price else None
+                      fair_confidence = 'High' if len(fair_anchors) >= 3 else 'Medium' if len(fair_anchors) == 2 else 'Low'
+                      fair_method = ' + '.join(fair_methods)
+                  else:
+                      malone_fair_value = fair_low = fair_high = upside_pct = None
+                      fair_confidence = 'Low'
+                      fair_method = 'Insufficient valuation anchors'
+          
+                  # Expected 12-month value is the base fair value derived from next-year inputs and
+                  # current analyst expectations. It is not a short-term price prediction.
+                  expected_12m = malone_fair_value
+                  # Saturating upside score: large estimated upside remains useful but cannot overwhelm
+                  # the rest of Malone's framework merely because one valuation input is extreme.
+                  if upside_pct is None:
+                      upside_score = 50
+                  else:
+                      import math as _math
+                      upside_score = clamp(50 + 45 * _math.tanh(upside_pct / 60.0))
+                  # Opportunity is intentionally separate from the legacy Deep/High-Level verdict.
+                  # It is the context-aware score that combines current fundamentals, future story
+                  # and valuation upside without rewriting the underlying Deep mathematics.
+          
+                  # Round the displayed component scores FIRST, then calculate the headline scores
+                  # from those exact displayed integers. This makes every score mathematically auditable.
+                  growth_score = round(g)
+                  quality_score = round(q)
+                  value_score = round(value)
+                  cashflow_score = round(cash)
+                  revisions_score = round(revisions)
+                  momentum_score = round(momentum)
+                  dividend_score = round(dividend)
+                  analyst_score = round(analyst)
+          
+                  # Deep score: the headline is calculated from the exact driver values shown in the UI.
+                  deep_components = [
+                      growth_score * .25, quality_score * .20, value_score * .15,
+                      cashflow_score * .15, revisions_score * .10, momentum_score * .05,
+                      dividend_score * .10
                   ]
-                  malone_score=round(sum(malone_components))
+                  deep = round(sum(deep_components))
+          
+                  # High-level score: same rule — calculate from the exact displayed component values.
+                  high = round(growth_score * .35 + quality_score * .25 + momentum_score * .15 + analyst_score * .25)
 
-                  # Investor-facing decision: only BUY / HOLD / SELL.
-                  severe_risk=(quality_score<30 and financial_score<35)
-                  sell_signal=(malone_score<45) or severe_risk
-                  buy_signal=(malone_score>=70 and quality_score>=45 and financial_score>=40 and valuation_score>=45)
-                  verdict='BUY' if buy_signal else 'SELL' if sell_signal else 'HOLD'
-                  if str(x.get('asset_type','')).upper() in ('ETF','MUTUALFUND'): verdict='HOLD'
+                  # Opportunity combines Deep, Story and valuation upside.
+                  opportunity_score = round(clamp(deep * .60 + story * .25 + upside_score * .15))
 
-                  # Compatibility fields for older frontend components. They are aliases and
-                  # no longer drive the investment decision.
-                  deep=malone_score; high=malone_score; opportunity_score=malone_score
-                  story=round(mean_scores([(growth_score,.35),(quality_score,.25),(revisions_score,.20),(valuation_score,.20)]))
-                  value_score=valuation_score; cashflow_score=financial_score
-                  analyst_score=round(clamp(50+((x.get('target_mean')/price)-1)*100)) if x.get('target_mean') and price else 50
-                  opportunity_verdict=verdict
+                  # Malone Verdict V5.3: multiple moderate barriers rather than one very high hurdle.
+                  # Opportunity and Deep are mandatory; BUY then requires at least 4 of 6 supporting tests.
+                  support_tests = {
+                      'Story': story >= 60,
+                      'Upside': upside_pct is not None and upside_pct >= 5,
+                      'Quality': quality_score >= 45,
+                      'Cash Flow': cashflow_score >= 40,
+                      'Momentum': momentum_score >= 45,
+                      'Analyst': analyst_score >= 50,
+                  }
+                  support_passes = sum(1 for passed in support_tests.values() if passed)
+                  absolute_buy = opportunity_score >= 70 and deep >= 60 and support_passes >= 4
+                  high_conviction = (
+                      opportunity_score >= 82 and deep >= 72 and support_passes >= 5 and
+                      upside_pct is not None and upside_pct >= 10 and quality_score >= 55
+                  )
+
+                  if absolute_buy:
+                      verdict = 'BUY'
+                  elif opportunity_score >= 62 and deep >= 55:
+                      verdict = 'WATCH'
+                  elif opportunity_score >= 50 or deep >= 45:
+                      verdict = 'HOLD'
+                  else:
+                      verdict = 'AVOID'
+
+                  # Hard safety floor.
+                  if quality_score < 35 and cashflow_score < 35:
+                      verdict = 'AVOID'
+                  if str(x.get('asset_type','')).upper() in ('ETF','MUTUALFUND'):
+                      verdict = 'ETF'
+
+                  conviction = (
+                      'HIGH' if high_conviction and verdict == 'BUY' else
+                      'STANDARD' if verdict == 'BUY' else
+                      'ATTRACTIVE' if verdict == 'WATCH' and opportunity_score >= 70 else ''
+                  )
 
                   x.update({
-                    'growth_score':growth_score,'quality_score':quality_score,'value_score':value_score,
-                    'cashflow_score':cashflow_score,'financial_score':financial_score,
-                    'revisions_score':revisions_score,'momentum_score':momentum_score,'dividend_score':dividend_score,
-                    'analyst_score':analyst_score,'malone_score':malone_score,
-                    'malone_score_components':malone_components,'high_score':high,'deep_score':deep,
-                    'deep_score_components':malone_components,'story_score':story,'opportunity_score':opportunity_score,
-                    'malone_fair_value':malone_fair_value,'fair_value_low':fair_low,'fair_value_high':fair_high,
-                    'expected_12m_value':expected_12m,'upside_pct':upside_pct,'upside_score':fv_score,
-                    'fair_value_confidence':fair_confidence,'fair_value_method':fair_method,
-                    'earnings_fair_value':earnings_fv,'fcf_fair_value':fcf_fv,
-                    'analyst_target_upside':target_upside,'investment_context':investment_reason,
-                    'opportunity_verdict':opportunity_verdict,'verdict':verdict,
-                    'verdict_method':'Malone Score V6.0 — BUY / HOLD / SELL'
+                    'growth_score': growth_score, 'quality_score': quality_score, 'value_score': value_score,
+                    'cashflow_score': cashflow_score, 'revisions_score': revisions_score,
+                    'momentum_score': momentum_score, 'dividend_score': dividend_score,
+                    'analyst_score': analyst_score, 'high_score': high, 'deep_score': deep,
+                    'deep_score_components': deep_components,
+                    'story_score': story, 'opportunity_score': opportunity_score,
+                    'malone_fair_value': malone_fair_value, 'fair_value_low': fair_low, 'fair_value_high': fair_high,
+                    'expected_12m_value': expected_12m, 'upside_pct': upside_pct, 'upside_score': upside_score,
+                    'fair_value_confidence': fair_confidence, 'fair_value_method': fair_method, 'earnings_fair_value': earnings_fv, 'fcf_fair_value': fcf_fv,
+                    'analyst_target_upside': target_upside, 'investment_context': investment_reason,
+                    'opportunity_verdict': verdict,
+                    'verdict': verdict,
+                    'support_passes': support_passes,
+                    'absolute_buy': bool(absolute_buy),
+                    'high_conviction': bool(high_conviction),
+                    'conviction': conviction,
+                    'verdict_method': 'Malone Multi-Barrier V5.3'
                   })
 
                   oldx = previous.get(symbol, {})
-                  if oldx.get('malone_score') is not None:
-                      x['malone_score_change'] = malone_score - oldx['malone_score']
                   if oldx.get('deep_score') is not None:
                       x['deep_score_change'] = deep - oldx['deep_score']
                   if oldx.get('high_score') is not None:
@@ -564,13 +691,13 @@ jobs:
                   if oldx.get('verdict'):
                       x['previous_verdict'] = oldx['verdict']
           
-                  # Explain Malone Score movement using the seven factor weights.
-                  if oldx.get('malone_score') is not None:
+                  # Explain Deep Score movement using the weighted driver changes.
+                  if oldx.get('deep_score') is not None:
                       driver_specs = [
-                          ('Growth', 'growth_score', .20), ('Quality', 'quality_score', .20),
-                          ('Financial Strength', 'financial_score', .15), ('Valuation', 'value_score', .20),
-                          ('Momentum', 'momentum_score', .10), ('Revisions', 'revisions_score', .10),
-                          ('Dividend', 'dividend_score', .05)
+                          ('Growth', 'growth_score', .25), ('Quality', 'quality_score', .20),
+                          ('Value', 'value_score', .15), ('Cash Flow', 'cashflow_score', .15),
+                          ('Revisions', 'revisions_score', .10), ('Momentum', 'momentum_score', .05),
+                          ('Dividend', 'dividend_score', .10)
                       ]
                       changes = []
                       for label, key, weight in driver_specs:
@@ -581,7 +708,7 @@ jobs:
                               if delta != 0:
                                   changes.append({'factor': label, 'delta': delta, 'impact': round(impact, 2)})
                       changes.sort(key=lambda z: abs(z['impact']), reverse=True)
-                      x['malone_score_change_reasons'] = changes[:3]
+                      x['deep_score_change_reasons'] = changes[:3]
           
                   # Make extreme trailing P/E useful rather than hiding it.
                   pe = x.get('pe'); fpe = x.get('forward_pe')
@@ -631,12 +758,10 @@ jobs:
         env:
           DAILY_SNAPSHOT: ${{ github.event.schedule == '30 20 * * *' }}
         run: |
-          python -m pip install --disable-pip-version-check -q yfinance
           python <<'PY'
-          import json, os, urllib.parse, urllib.request, xml.etree.ElementTree as ET
+          import json, os
           from datetime import datetime, timezone
           from zoneinfo import ZoneInfo
-          import yfinance as yf
           
           files=[]
           for root, dirs, names in os.walk('shards'):
@@ -667,87 +792,88 @@ jobs:
           if len(stocks)<900 or asx_count<450 or us_count<450:
               raise SystemExit(f'Merged universe validation failed: total={len(stocks)}, ASX={asx_count}, US={us_count}')
           
+          # Re-rank the complete universe and apply the multi-barrier BUY logic after merge.
+          ranked = sorted(
+              [x for x in stocks if str(x.get('asset_type','')).upper() not in ('ETF','MUTUALFUND')],
+              key=lambda x: (x.get('opportunity_score') if x.get('opportunity_score') is not None else -1),
+              reverse=True
+          )
+          n_ranked = len(ranked)
+          rank_map = {x.get('symbol'): i + 1 for i, x in enumerate(ranked)}
+
+          for st in stocks:
+              sym = st.get('symbol')
+              rank = rank_map.get(sym)
+              st['opportunity_rank'] = rank
+              st['opportunity_rank_pctile'] = round((rank / n_ranked) * 100, 2) if rank and n_ranked else None
+
+              if str(st.get('asset_type','')).upper() in ('ETF','MUTUALFUND'):
+                  st['verdict'] = 'ETF'
+                  st['conviction'] = ''
+                  st['verdict_method'] = 'Malone Multi-Barrier V5.3'
+                  continue
+
+              opp = st.get('opportunity_score')
+              deepv = st.get('deep_score')
+              storyv = st.get('story_score')
+              upside = st.get('upside_pct')
+              quality = st.get('quality_score')
+              cashflow = st.get('cashflow_score')
+              support_passes = int(st.get('support_passes') or 0)
+
+              absolute_buy = (
+                  opp is not None and opp >= 70 and
+                  deepv is not None and deepv >= 60 and
+                  support_passes >= 4
+              )
+
+              # Relative exception: an outstanding top-3% opportunity can qualify if it narrowly
+              # misses the absolute gate but still clears stronger fundamental safeguards.
+              relative_exception = (
+                  rank is not None and st.get('opportunity_rank_pctile', 100) <= 3 and
+                  opp is not None and opp >= 75 and
+                  deepv is not None and deepv >= 68 and
+                  storyv is not None and storyv >= 65 and
+                  upside is not None and upside >= 5 and
+                  quality is not None and quality >= 50 and
+                  cashflow is not None and cashflow >= 45
+              )
+
+              final_buy = absolute_buy or relative_exception
+              st['absolute_buy'] = bool(absolute_buy)
+              st['relative_exception'] = bool(relative_exception)
+
+              if final_buy:
+                  st['verdict'] = 'BUY'
+              elif opp is not None and opp >= 62 and deepv is not None and deepv >= 55:
+                  st['verdict'] = 'WATCH'
+              elif (opp is not None and opp >= 50) or (deepv is not None and deepv >= 45):
+                  st['verdict'] = 'HOLD'
+              else:
+                  st['verdict'] = 'AVOID'
+
+              if quality is not None and cashflow is not None and quality < 35 and cashflow < 35:
+                  st['verdict'] = 'AVOID'
+
+              if st['verdict'] == 'BUY':
+                  st['conviction'] = 'HIGH' if bool(st.get('high_conviction')) else 'STANDARD'
+              elif st['verdict'] == 'WATCH' and opp is not None and opp >= 70:
+                  st['conviction'] = 'ATTRACTIVE'
+              else:
+                  st['conviction'] = ''
+              st['verdict_method'] = 'Malone Multi-Barrier V5.3'
+
           now=datetime.now(timezone.utc)
           mel_now=now.astimezone(ZoneInfo('Australia/Melbourne'))
           snapshot_date=mel_now.date().isoformat()
           is_daily=os.environ.get('DAILY_SNAPSHOT','false').lower()=='true'
-
-          # Broad market dashboard data. This is separate from the 1,000-stock universe so
-          # the homepage can show the actual major indices, volatility, FX and commodities.
-          market_symbols={
-              'ASX 200':'^AXJO','S&P 500':'^GSPC','NASDAQ':'^IXIC','Dow Jones':'^DJI',
-              'Russell 2000':'^RUT','Nikkei 225':'^N225','FTSE 100':'^FTSE','VIX':'^VIX',
-              'US 10Y':'^TNX','Gold':'GC=F','WTI Crude':'CL=F','AUD/USD':'AUDUSD=X','Bitcoin':'BTC-USD'
-          }
-          market_overview=[]
-          for label,sym in market_symbols.items():
-              try:
-                  h=yf.Ticker(sym).history(period='5d',auto_adjust=False)
-                  closes=h['Close'].dropna() if h is not None and 'Close' in h else []
-                  last=float(closes.iloc[-1]) if len(closes) else None
-                  prev=float(closes.iloc[-2]) if len(closes)>1 else None
-                  market_overview.append({'name':label,'symbol':sym,'value':last,'day_pct':((last/prev)-1)*100 if last and prev else None})
-              except Exception:
-                  market_overview.append({'name':label,'symbol':sym,'value':None,'day_pct':None})
-
-          adv=sum(1 for x in stocks if (x.get('day_pct') or 0)>0)
-          dec=sum(1 for x in stocks if (x.get('day_pct') or 0)<0)
-          unchanged=max(0,len(stocks)-adv-dec)
-          verdict_counts={k:sum(1 for x in stocks if x.get('verdict')==k) for k in ('BUY','HOLD','SELL')}
-          by_region={
-              'ASX': [x for x in stocks if str(x.get('symbol','')).upper().endswith('.AX')],
-              'US': [x for x in stocks if not str(x.get('symbol','')).upper().endswith('.AX')]
-          }
-          breadth_by_region={}
-          for region,arr in by_region.items():
-              a=sum(1 for x in arr if (x.get('day_pct') or 0)>0); d=sum(1 for x in arr if (x.get('day_pct') or 0)<0)
-              breadth_by_region[region]={'advancing':a,'declining':d,'unchanged':max(0,len(arr)-a-d),'breadth_pct':(a/(a+d)*100 if a+d else 50)}
-
-          sector_map={}
-          for x in stocks:
-              sec=x.get('sector') or 'Other'
-              sector_map.setdefault(sec,[]).append(x)
-          sector_overview=[]
-          for sec,arr in sector_map.items():
-              vals=[x.get('day_pct') for x in arr if x.get('day_pct') is not None]
-              scores=[x.get('malone_score') for x in arr if x.get('malone_score') is not None]
-              sector_overview.append({'sector':sec,'count':len(arr),'avg_day_pct':sum(vals)/len(vals) if vals else None,'avg_malone_score':sum(scores)/len(scores) if scores else 50})
-          sector_overview.sort(key=lambda z:z.get('avg_malone_score') or 0,reverse=True)
-
-          # Lightweight market news cache. If RSS is unavailable, the frontend keeps its
-          # search-link fallback rather than failing the data refresh.
-          news=[]
-          news_queries=['Australian stock market ASX','US stock market Wall Street','global markets economy','RBA interest rates Australia','Federal Reserve rates','commodities gold oil markets']
-          for q in news_queries:
-              try:
-                  url='https://news.google.com/rss/search?'+urllib.parse.urlencode({'q':q,'hl':'en-AU','gl':'AU','ceid':'AU:en'})
-                  req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'})
-                  root=ET.fromstring(urllib.request.urlopen(req,timeout=12).read())
-                  for item in root.findall('./channel/item')[:6]:
-                      title=(item.findtext('title') or '').strip(); link=(item.findtext('link') or '').strip(); pub=(item.findtext('pubDate') or '').strip()
-                      if title and link: news.append({'title':title,'link':link,'published_at':pub,'query':q})
-              except Exception:
-                  pass
-          seen=set(); clean_news=[]
-          for item in news:
-              key=item['link']
-              if key in seen: continue
-              seen.add(key); clean_news.append(item)
-              if len(clean_news)>=30: break
-
           out={
               'updated_at': now.isoformat(),
               'source': 'Yahoo Finance via yfinance',
-              'model_version': meta.get('model_version','6.0.0'),
+              'model_version': meta.get('model_version','5.3.0'),
               'universe_version': 'ASX 500 + US 500',
               'universe_count': len(stocks),
               'stocks': stocks,
-              'market_overview': market_overview,
-              'market_breadth': {'advancing':adv,'declining':dec,'unchanged':unchanged,'breadth_pct':(adv/(adv+dec)*100 if adv+dec else 50),'by_region':breadth_by_region},
-              'verdict_counts': verdict_counts,
-              'sector_overview': sector_overview,
-              'market_news': clean_news,
-              'market_timezone': 'Australia/Melbourne'
           }
           
           os.makedirs('snapshots',exist_ok=True)
@@ -780,8 +906,8 @@ jobs:
                           if not sym: continue
                           monthly_history.setdefault(sym,[]).append({
                               'month':month,'price':st.get('price'),'fair_value':st.get('malone_fair_value'),
-                              'upside_pct':st.get('upside_pct'),'malone_score':st.get('malone_score'),
-                              'verdict':st.get('verdict')})
+                              'upside_pct':st.get('upside_pct'),'story_score':st.get('story_score'),
+                              'opportunity_score':st.get('opportunity_score')})
                   except Exception:
                       continue
           for sym in monthly_history:
